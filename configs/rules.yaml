@@ -1,0 +1,28 @@
+version: "v1.0"
+rules:
+  public_ip_limit:
+    id: "public_ip_limit"
+    dimension: "ip"
+    algorithm: "sliding_window"
+    limit: 60
+    window: 60s
+    default_cost: 1
+    failure_policy: "fail_open"
+
+  authenticated_user:
+    id: "authenticated_user"
+    dimension: "user"
+    algorithm: "token_bucket"
+    capacity: 100
+    refill_rate: 10.0 # 10 tokens per second
+    default_cost: 1
+    failure_policy: "fail_open"
+
+  expensive_ai_endpoint:
+    id: "expensive_ai_endpoint"
+    dimension: "api_key"
+    algorithm: "fixed_window"
+    limit: 10
+    window: 60s
+    default_cost: 5
+    failure_policy: "fail_closed"

@@ -1,0 +1,58 @@
+# Binaries and compiled outputs
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Test coverage, profiling and benchmark artifacts
+*.cover
+*.coverage
+coverage.txt
+coverage.out
+profile.out
+cpu.pprof
+mem.pprof
+trace.out
+
+# Go workspace and build cache
+.cache/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Local Redis persistence dumps
+*.rdb
+*.aof
+dump.rdb
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and Editor configurations
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Temporary and log files
+tmp/
+*.log
+

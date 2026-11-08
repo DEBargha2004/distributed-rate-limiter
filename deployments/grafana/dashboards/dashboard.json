@@ -1,0 +1,84 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Requests Allowed vs Denied (Rate)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (rule_id) (rate(rate_limiter_requests_allowed_total[1m]))",
+          "legendFormat": "Allowed - {{rule_id}}"
+        },
+        {
+          "expr": "sum by (rule_id) (rate(rate_limiter_requests_denied_total[1m]))",
+          "legendFormat": "Denied - {{rule_id}}"
+        }
+      ]
+    },
+    {
+      "title": "Decision Latency (P50 / P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(rate_limiter_decision_latency_seconds_bucket[1m])))",
+          "legendFormat": "P50 Latency"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(rate_limiter_decision_latency_seconds_bucket[1m])))",
+          "legendFormat": "P99 Latency"
+        }
+      ]
+    },
+    {
+      "title": "Redis Errors",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(rate_limiter_redis_errors_total[5m]))",
+          "legendFormat": "Redis Errors (5m)"
+        }
+      ]
+    },
+    {
+      "title": "Fallback Limiter Activations",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(rate_limiter_fallback_activations_total[5m]))",
+          "legendFormat": "Fallbacks Triggered (5m)"
+        }
+      ]
+    },
+    {
+      "title": "Active Rule Version",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate_limiter_rule_version_info",
+          "legendFormat": "{{version}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["rate-limiter", "redis"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Distributed Rate Limiter Dashboard",
+  "uid": "rl-dashboard",
+  "version": 1
+}
