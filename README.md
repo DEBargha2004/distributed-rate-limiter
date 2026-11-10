@@ -1,125 +1,214 @@
 # Distributed Rate Limiter
 
-A production-grade, distributed rate-limiting service built in **Go** and backed by **Redis** (atomic Lua scripting) with support for Redis Cluster, hot-reloading rules, in-process fallback policies, and a gRPC API.
+A rate-limiting service in Go that enforces request quotas across many application servers. Counters live in a shared Redis store, and each allow/deny decision runs atomically inside a Lua script. Three algorithms sit behind one interface, rules are configurable and hot-reloadable, clients talk to it over gRPC or an HTTP middleware, and Redis outages are handled by per-rule failure policies.
+
+**Status:** Phases 1 and 2 of 10 have their core bricks complete (rule configuration with hot-reload; the three Lua algorithms). Everything else below is **planned** and labelled as such. No benchmarks have been run yet. Updated 2026-11-10.
+
+Legend used throughout: **Built** = implemented, **Planned** = designed, not built, **Not yet measured** = no result recorded.
 
 ---
 
-## 🏛️ Architecture Overview
+## Results at a glance
+
+| Metric                                                             | Value | Conditions | Label                                                                                             |
+| ------------------------------------------------------------------ | ----- | ---------- | ------------------------------------------------------------------------------------------------- |
+| Admitted requests never exceed the limit (N goroutines, one key)   | n/a   | n/a        | Not yet measured                                                                                  |
+| Decision latency P50 / P99                                         | n/a   | n/a        | Not yet measured (working hypothesis P50 < 1 ms, P99 < 3 ms: target only, not a spec requirement) |
+| Redis-outage behaviour (breaker trips, fallback engages, recovery) | n/a   | n/a        | Not yet measured                                                                                  |
+| Throughput as Redis Cluster shards are added                       | n/a   | n/a        | Not yet measured (stretch; single-host runs will be CPU-bound)                                    |
+
+---
+
+## Why this exists
+
+Without a shared limiter, each server tracks usage on its own, so a client can exceed a global quota by spreading requests across instances. Large APIs run a system like this in front of their endpoints to protect backends, keep access fair between tenants, and limit abuse. This project builds one from scratch as a portfolio-scale learning project.
+
+**Non-goals:** integration into other projects (an AI gateway, a URL shortener); a remote config service as a rule source; any claim of production readiness without measured evidence.
+
+---
+
+## Features
+
+### Three algorithms behind one interface (Lua scripts: **Built**; Go interface and wiring: **Planned**)
+
+One interface takes a key and a cost and returns a decision: allowed, remaining, and retry-after. Each rule picks its algorithm by configuration.
+
+| Algorithm              | How it works                                                                                                             | Trade-off                                                          | When to pick it            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | -------------------------- |
+| Fixed window           | Counter per `key:windowStart`, TTL equal to the window                                                                   | Cheapest; allows up to about 2x the limit across a window boundary | Where cost matters most    |
+| Sliding window counter | Keeps the current and previous window counts and weights the previous one by how much of it still overlaps               | Approximate but smooth and cheap                                   | Strict fairness            |
+| Token bucket           | Stores `tokens` and `lastRefill`; on each request refills `elapsed * rate` (capped at capacity), then subtracts the cost | Allows controlled bursts                                           | Burst-friendly public APIs |
+
+The fixed-window boundary flaw will be shown by a test (**Planned**, task 2.6).
+
+### Atomic check-and-decrement via Lua (**Built** for scripts; Redis-backed tests **Planned**)
+
+A naive read, compute, write cycle from the application lets two requests read the same count and both pass; this race will be demonstrated first (**Planned**, task 2.5). The fix moves the whole decision into one Lua script, which Redis runs atomically on its single thread.
+
+- Scripts are loaded once and executed with `EVALSHA` (**Planned**, task 3.2).
+- Time comes from Redis `TIME` inside the script, not from client clocks, to avoid skew between app servers.
+- Every key gets a TTL so idle users do not leak memory.
+
+### Configurable, hot-reloadable rules (validation and atomic swap: **Built**; file watching and version logging: **Planned**)
+
+A rule has a match dimension (user, API key, IP, route, or a combination), an algorithm, a limit, a window, and a failure policy. Requests carry a cost, so an expensive endpoint can consume more than one token (**Planned**, task 4.4).
+
+- When several rules match, all are applied and the request is denied if any denies, returning the most restrictive `retry_after` (**Planned**, task 4.3).
+- Rules load from a file. A new rule set is validated before it is applied; on failure the old set stays active. The active set is an immutable snapshot behind an atomic pointer, so request paths read without locks.
+- Each decision will log which rule-set version it used (**Planned**, tasks 1.5 and 4.5).
+
+### gRPC API (**Planned**, Phases 3 and 6)
+
+Contract from the spec:
 
 ```
-                      +---------------------------------------+
-                      |       Client / Upstream Service       |
-                      +---------------------------------------+
-                                          |
-                              (HTTP Request with Key/IP)
-                                          v
-                      +---------------------------------------+
-                      |   HTTP Middleware (pkg/middleware)    |
-                      +---------------------------------------+
-                                          |
-                               (gRPC AllowRequest)
-                                          v
-                      +---------------------------------------+
-                      |    Rate Limiter Server (cmd/server)   |
-                      |          - gRPC API Service           |
-                      |          - Hot-Reload Engine          |
-                      +---------------------------------------+
-                                     /         \
-                      (Healthy / Primary)   (Outage / Degraded)
-                                   /             \
-                                  v               v
-                +--------------------+   +-----------------------+
-                |   Redis Cluster    |   |  In-Memory Fallback   |
-                |   - Atomic Lua     |   |  - Local Token Bucket |
-                |   - Hash-Tag Slots |   |  - Circuit Breaker    |
-                +--------------------+   +-----------------------+
+Allow(AllowRequest{key, ruleId, cost})
+  -> AllowResponse{allowed, limit, remaining, retryAfterMs, resetAtMs}
+```
+
+Defined in protobuf with stable response fields. Callers set strict deadlines; a timeout triggers the failure policy, because a slow rate limiter is worse than none.
+
+### Standard HTTP headers and middleware (**Planned**, Phase 6)
+
+A Go `http.Handler` middleware extracts a key (pluggable extractors: IP with trusted-proxy handling, bearer token, API key), calls `Allow`, sets headers, and returns 429 when limited.
+
+| Header                  | Meaning                                                      |
+| ----------------------- | ------------------------------------------------------------ |
+| `X-RateLimit-Limit`     | Limit of the matched rule                                    |
+| `X-RateLimit-Remaining` | Remaining quota                                              |
+| `X-RateLimit-Reset`     | When the quota resets (unit to be fixed and documented here) |
+| `Retry-After`           | Seconds to wait; sent on 429 responses                       |
+
+### Failure policy (**Planned**, Phase 5)
+
+When Redis times out or errors, behaviour is configurable per rule: **fail-open** (allow; protects availability) or **fail-closed** (deny; protects the backend). A per-instance in-process token bucket gives approximate limiting during an outage, and a circuit breaker stops waiting on repeated timeouts and probes for recovery.
+
+### Sharding via Redis Cluster (**Planned**, Phase 8)
+
+Cluster spreads keys across slots, so every key a script touches must land on one slot. The proposed key format is `rl:{<ruleId>:<dimValue>}[:suffix]`, which gives each subject its own slot. Planned checks: slot co-location with `CLUSTER KEYSLOT`, scripts loaded on every master, a scaling run (stretch), and a hot-key demonstration. Known limit: one very busy subject always hits a single shard.
+
+### Metrics (**Planned**, Phase 7)
+
+Counters for allowed and denied by rule, a decision-latency histogram, counters for Redis errors and fallback activations, exposed on a Prometheus `/metrics` endpoint. A Grafana dashboard JSON is stretch.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[Client] --> M[HTTP middleware<br/>extract key, set headers, 429]
+    M -->|gRPC Allow + deadline| S[gRPC service]
+    S --> E[Engine<br/>match rules, build keys, combine]
+    E --> L[Redis limiter<br/>EVALSHA]
+    L --> R[(Redis / Redis Cluster<br/>Lua scripts)]
+    E -.error or timeout.-> B[Circuit breaker<br/>+ failure policy]
+    B --> F[In-process fallback<br/>token bucket]
+    CFG[Rules file] --> W[Config watcher<br/>atomic snapshot] --> E
+```
+
+The service is Go; the Lua scripts run inside Redis. The rule snapshot, circuit breaker and fallback limiter run in-process. Per-stage latency budgets are not defined yet.
+
+| Component                             | Path                 | Status       |
+| ------------------------------------- | -------------------- | ------------ |
+| Rule validation, atomic hot-reload    | `internal/config`    | Built (core) |
+| Lua algorithms                        | `internal/redis/lua` | Built (core) |
+| Redis client, script manager, limiter | `internal/redis`     | Planned      |
+| Engine                                | `internal/engine`    | Planned      |
+| Breaker, fallback, policy             | `internal/fallback`  | Planned      |
+| gRPC service                          | `internal/server`    | Planned      |
+| Middleware, extractors                | `pkg/middleware`     | Planned      |
+
+---
+
+## Design decisions
+
+No ADRs are written yet; each row links once its ADR exists.
+
+| Decision                | Alternative          | Current direction                                            | ADR     |
+| ----------------------- | -------------------- | ------------------------------------------------------------ | ------- |
+| Time source             | Client timestamp     | Redis `TIME` in the script                                   | Pending |
+| Key format and hash tag | Tag on rule id only  | Tag wraps rule id and dimension value                        | Pending |
+| Multiple matching rules | Priority hierarchy   | Apply all, deny if any; no refund of tokens already consumed | Pending |
+| Failure policy          | One global behaviour | Per rule fail-open or fail-closed, plus fallback and breaker | Pending |
+| Algorithm choice        | One algorithm        | Chosen per rule (table above)                                | Pending |
+| Rule snapshot           | Read-write mutex     | Atomic pointer to an immutable snapshot                      | Pending |
+
+---
+
+## Quickstart
+
+Not verified here: the commands below were not run while writing this README.
+
+Prerequisites: Go (version pinned in `go.mod`) and Docker for Redis.
+
+```bash
+go test -race ./internal/config/...
+```
+
+Running the service, the middleware and the Redis-backed tests will be documented as those phases land.
+
+---
+
+## Proof plan
+
+Planned in Phase 9; nothing here is measured yet.
+
+- **Concurrency test:** N goroutines hammer one key and assert the admitted count never exceeds the limit, under `-race`.
+- **Benchmark:** P50 and P99 of a decision, with hardware, OS, Go and Redis versions, run count and load method recorded in `reports/`.
+- **Outage run:** pause or kill Redis mid-load; record the breaker trip, fallback engagement and recovery.
+
+---
+
+## Repository layout
+
+Verify against the actual tree; entries marked "planned" do not exist yet.
+
+```
+internal/config/        rule validation, atomic hot-reload
+internal/redis/lua/     fixed_window.lua, sliding_window.lua, token_bucket.lua
+internal/redis/         planned: client, script manager, limiter
+internal/engine/        planned: rule matching, keys, combine
+internal/fallback/      planned: breaker, local limiter, policy
+internal/server/        planned: gRPC service
+pkg/middleware/         planned: extractors, HTTP middleware
+test/                   planned: concurrency, benchmark, outage
+docs/adr/               planned: decision records
+docs/spec-traceability.md   spec requirement to task mapping
+reports/                planned: benchmark and outage reports
+TASKS.md                task board and logs
 ```
 
 ---
 
-## 🗺️ Repo Map: "Where to Do What"
+## Known limitations
 
-| Path | Purpose | What to Implement Here |
-|---|---|---|
-| [`proto/ratelimiter/v1/ratelimiter.proto`](proto/ratelimiter/v1/ratelimiter.proto) | API Contract | Protobuf definition for `Allow(AllowRequest) -> AllowResponse` with keys, rule IDs, cost, deadlines. |
-| [`internal/algorithm/`](internal/algorithm/) | Algorithm Interfaces | Unified `Limiter` interface (`Check(ctx, key, cost) -> Decision`), memory/mock implementations for unit tests. |
-| [`internal/redis/lua/`](internal/redis/lua/) | Redis Atomic Scripts | Pure Lua scripts for Fixed Window, Sliding Window Counter, and Token Bucket. Uses Redis `TIME` and sets TTLs. |
-| [`internal/redis/`](internal/redis/) | Redis Cluster Client | Connection pooling, script preloading (`SCRIPT LOAD` / `EVALSHA`), and hash-tag key formatting (`rl:{rule}:{user123}`). |
-| [`internal/config/`](internal/config/) | Rule Definitions & Hot Reload | YAML rule schema and file watcher using `atomic.Pointer` for lock-free snapshot swapping. |
-| [`internal/engine/`](internal/engine/) | Rule Matching Engine | Dimension extraction (user, IP, API key, route), rule precedence resolution, and multi-rule enforcement. |
-| [`internal/fallback/`](internal/fallback/) | Fault Tolerance | Circuit breaker for Redis timeouts, fail-open vs fail-closed policy, and in-memory local fallback limiter. |
-| [`internal/server/`](internal/server/) | Service Handlers | gRPC service handler implementing `Allow`, plus an HTTP server exposing `/metrics` and `/healthz`. |
-| [`internal/metrics/`](internal/metrics/) | Observability | Prometheus counters (`allowed_total`, `denied_total`, `redis_errors_total`) and latency histogram. |
-| [`pkg/middleware/`](pkg/middleware/) | Client Middleware | Go `http.Handler` wrapper setting standard headers (`X-RateLimit-*`, `Retry-After`) and returning HTTP 429. |
-| [`configs/rules.yaml`](configs/rules.yaml) | Configuration | Production & dev rate-limiting rules. |
-| [`deployments/`](deployments/) | Infrastructure | Docker Compose setup for multi-node Redis Cluster and Grafana dashboard JSON. |
-| [`test/`](test/) | Proof & Verification | Concurrency tests (goroutine hammering), P50/P99 latency benchmarks, and Redis outage simulation. |
+- No measured results yet.
+- No end-to-end path yet: no Redis client, script manager or gRPC service.
+- Verification of Phases 1 and 2 is incomplete: Redis-backed script tests, race and boundary demos, golden vectors, rule-set versioning and file watching are open tasks.
+- With several matching rules on different Redis slots, decisions are not atomic across rules.
+- A single hot subject stays on one shard.
+- Single-machine cluster tests are bounded by that machine's CPU.
 
 ---
 
-## 🚀 Step-by-Step Implementation Guide
+## Roadmap
 
-### Phase 1: Define the Contract & Algorithms
-1. **Protobuf (`proto/ratelimiter/v1/ratelimiter.proto`)**:
-   - Define message `AllowRequest` (`key`, `rule_id`, `cost`).
-   - Define message `AllowResponse` (`allowed`, `limit`, `remaining`, `retry_after_ms`, `reset_at_ms`).
-   - Define service `RateLimiter`.
-2. **Unified Interface (`internal/algorithm/limiter.go`)**:
-   - Define `type Limiter interface { Check(ctx context.Context, key string, cost int64) (Decision, error) }`.
-   - Implement `Decision` struct holding decision state.
-
-### Phase 2: Atomic Redis Operations with Lua
-1. **Lua Scripts (`internal/redis/lua/`)**:
-   - `fixed_window.lua`: `INCRBY` counter per `key:windowStart`, `EXPIRE` window.
-   - `sliding_window.lua`: Maintain current & previous window counts, weight previous count by remaining overlap percentage.
-   - `token_bucket.lua`: Read `tokens` & `last_refill`. Refill `(now - last_refill) * rate`, subtract cost, save state + TTL.
-   - *Key rule:* Always fetch timestamp via `redis.call('TIME')` inside Lua rather than passing client clocks.
-2. **Redis Client (`internal/redis/client.go`)**:
-   - Connect using Go's `github.com/redis/go-redis/v9` (supports standalone and Redis Cluster).
-   - Use `SCRIPT LOAD` on startup and execute via `EVALSHA`.
-
-### Phase 3: Config & Hot-Reload Engine
-1. **Config Definition (`internal/config/rule.go`)**:
-   - Represent rule matching: dimension (IP, User ID, API Key, Route), algorithm, limit, window, cost, and failure policy (`fail-open` or `fail-closed`).
-2. **Atomic Swap (`internal/config/watcher.go`)**:
-   - Store rule set in a `sync/atomic.Pointer[RuleSet]`.
-   - On file change event (or signal): parse new config -> validate -> atomically swap pointer. Zero locks on read path.
-
-### Phase 4: Resilience & Failure Handling
-1. **Circuit Breaker (`internal/fallback/breaker.go`)**:
-   - Track Redis failure rate. If consecutive timeouts exceed threshold, trip breaker to avoid caller timeout latency.
-2. **In-Memory Fallback (`internal/fallback/local_limiter.go`)**:
-   - If Redis is down, route traffic to local per-instance token bucket to provide graceful degradation rather than an all-or-nothing outage.
-
-### Phase 5: gRPC Service & HTTP Middleware
-1. **gRPC Server (`internal/server/grpc_service.go`)**:
-   - Bind to protobuf interface.
-   - Respect client deadlines (`ctx.Done()`).
-2. **HTTP Middleware (`pkg/middleware/http.go`)**:
-   - Pluggable key extractors (`extractor.go`).
-   - Set standard headers:
-     - `X-RateLimit-Limit`: Maximum requests permitted in window.
-     - `X-RateLimit-Remaining`: Remaining request quota.
-     - `X-RateLimit-Reset`: Unix epoch timestamp when quota resets.
-     - `Retry-After`: Seconds until retry allowed (only on 429 Too Many Requests).
-
-### Phase 6: Proof & Benchmarks
-1. **Concurrency Hammer (`test/concurrency_test.go`)**:
-   - Spawn $N$ goroutines (e.g. 100 concurrent workers) firing at the same key with limit $L$. Verify total admitted requests equal exactly $L$.
-2. **Benchmarks (`test/benchmark_test.go`)**:
-   - Benchmark `Check` latency: assert P50 < 1ms and P99 < 3ms with local Redis.
-3. **Outage Simulation (`test/failure_test.go`)**:
-   - Cut Redis connection mid-flight; verify circuit breaker trips and fallback policy triggers as configured.
+| Phase | Focus                                               | Status                                      |
+| ----- | --------------------------------------------------- | ------------------------------------------- |
+| 1     | Config and hot-reload                               | Core complete; versioning and watching open |
+| 2     | Lua algorithms                                      | Core complete; tests and demos open         |
+| 3     | Redis client, script manager, first end-to-end call | Next                                        |
+| 4     | Engine: keys, rules, cost, combine                  | Planned                                     |
+| 5     | Breaker, fallback, failure policy, deadlines        | Planned                                     |
+| 6     | gRPC hardening, extractors, middleware, headers     | Planned                                     |
+| 7     | Metrics (Grafana is stretch)                        | Planned                                     |
+| 8     | Redis Cluster (scaling run is stretch)              | Planned                                     |
+| 9     | Proof runs                                          | Planned                                     |
+| 10    | README, ADR sweep, final review                     | Planned                                     |
 
 ---
 
-## 🛠️ Environment Prerequisites
+## License
 
-To run and build this project:
-- **Go**: Version 1.22+ (`sudo apt install golang-go` or download from [go.dev/dl](https://go.dev/dl/))
-- **Docker & Docker Compose**: For running multi-node Redis Cluster
-- **Protoc & Go plugins**:
-  ```bash
-  go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-  go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-  ```
+Not yet chosen.
