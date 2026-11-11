@@ -47,6 +47,18 @@
   - *Why tag `{ruleID:subject}` instead of `{ruleID}`?* Tagging only `{ruleID}` would cause every subject hitting that rule to calculate the exact same CRC16 hash slot, concentrating 100% of that rule's traffic onto a single Redis node and burning it out (hot slot). Tagging `{ruleID:subject}` distributes different users evenly across all cluster shards while still guaranteeing that any multi-key operations for a single subject share a node.
 - **Explain-back**: The engine acts as the orchestration layer between configuration snapshots and rate limit execution. It reads the active `RuleSet` lock-free using `atomic.Pointer`, formats deterministic hash-tagged keys compatible with Redis Cluster, and delegates atomic script execution to `redis.Limiter`. This establishes the vertical pipeline required before introducing gRPC.
 
+---
+
+## Brick 3.5 [B] Minimal gRPC Allow (`internal/server/grpc.go`)
+- **Date**: 2026-11-11
+- **Prediction**: Handler will validate requests, delegate to Engine.Allow, map errors to standard gRPC status codes, and serialize decisions into millisecond wire fields.
+- **Result**: All unit tests in `internal/server` passed under `-race`.
+- **Defense Notes**:
+  - *Why return milliseconds (`retry_after_ms`, `reset_at_ms`)?* In high-throughput distributed systems handling thousands of requests per second, quota replenishment and window boundaries occur at sub-second scales. Forcing clients to wait whole seconds introduces artificial latency and tail queueing; millisecond precision allows callers to resume traffic as soon as capacity refills.
+  - *Why map internal errors to `status.Error(codes.X)`?* Returning raw Go errors defaults to an opaque `codes.Unknown` across RPC boundaries. Mapping to standard status codes (`InvalidArgument`, `NotFound`, `Internal`) enables cross-language client SDKs (Go, TypeScript, Python) to handle errors programmatically (like HTTP 400, 404, 500) rather than parsing error message strings with fragile regexes.
+- **Explain-back**: Implemented the `RateLimiterServer` gRPC handler implementing `Allow`. Used `errors.Is` to unwrap engine errors for clean mapping to gRPC status codes (`codes.NotFound` vs `codes.Internal`), and converted Go's domain `time.Duration` and `time.Time` into millisecond integers (`Milliseconds()` and `UnixMilli()`) for Protobuf transmission.
+
+
 
 
 
