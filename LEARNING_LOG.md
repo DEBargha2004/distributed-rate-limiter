@@ -37,5 +37,16 @@
   - *Why pass floats as formatted strings?* Passing raw floats can cause Redis protocol serialization and the Lua C API to unintentionally truncate values or lose precision. Formatting floats as decimal strings preserves full fidelity until Lua parses them with `tonumber()`.
 - **Explain-back**: Omitting a client-supplied `now` prevents clock drift across distributed application servers from causing unfair quota resets or backward time jumps, making Redis `TIME` the single authoritative clock. Floating-point numbers (such as refill rates) must cross into Redis Lua as formatted decimal strings to avoid unintended integer truncation and precision loss across the Redis RESP / Lua C boundary. Redis multi-bulk arrays are decoded by go-redis into `[]any` containing `int64` elements, which require explicit type assertions before being cast into domain types like `time.Duration` and `time.Time`.
 
+---
+
+## Brick 3.4 [C] Stub Engine (`internal/engine/engine.go`)
+- **Date**: 2026-11-11
+- **Prediction**: Stub engine connects the atomic watcher snapshot with the Redis limiter to provide an Allow() execution path for the thin slice.
+- **Result**: All unit and end-to-end reload tests passed under `-race`.
+- **Defense Notes**:
+  - *Why tag `{ruleID:subject}` instead of `{ruleID}`?* Tagging only `{ruleID}` would cause every subject hitting that rule to calculate the exact same CRC16 hash slot, concentrating 100% of that rule's traffic onto a single Redis node and burning it out (hot slot). Tagging `{ruleID:subject}` distributes different users evenly across all cluster shards while still guaranteeing that any multi-key operations for a single subject share a node.
+- **Explain-back**: The engine acts as the orchestration layer between configuration snapshots and rate limit execution. It reads the active `RuleSet` lock-free using `atomic.Pointer`, formats deterministic hash-tagged keys compatible with Redis Cluster, and delegates atomic script execution to `redis.Limiter`. This establishes the vertical pipeline required before introducing gRPC.
+
+
 
 
