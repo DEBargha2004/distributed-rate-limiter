@@ -58,7 +58,13 @@
   - *Why map internal errors to `status.Error(codes.X)`?* Returning raw Go errors defaults to an opaque `codes.Unknown` across RPC boundaries. Mapping to standard status codes (`InvalidArgument`, `NotFound`, `Internal`) enables cross-language client SDKs (Go, TypeScript, Python) to handle errors programmatically (like HTTP 400, 404, 500) rather than parsing error message strings with fragile regexes.
 - **Explain-back**: Implemented the `RateLimiterServer` gRPC handler implementing `Allow`. Used `errors.Is` to unwrap engine errors for clean mapping to gRPC status codes (`codes.NotFound` vs `codes.Internal`), and converted Go's domain `time.Duration` and `time.Time` into millisecond integers (`Milliseconds()` and `UnixMilli()`) for Protobuf transmission.
 
+---
 
-
-
+## Brick 3.6 [B] Thin Slice End-to-End Smoke Test (`test/smoke_test.go`)
+- **Date**: 2026-11-11
+- **Prediction**: Calls 1–3 allowed (`Remaining`: 2 -> 1 -> 0, `RetryAfterMs`: 0); Call 4 denied (`Allowed`: false, `Remaining`: 0, `RetryAfterMs`: ~2000ms at 0.5 tokens/sec).
+- **Result**: `TestSmoke_ThinSlice_EndToEnd` passed under `-race` with real Redis (`REQUIRE_REDIS=1`), and the full test suite plus `go vet` passed cleanly.
+- **Defense Notes**:
+  - *Why test gRPC over `bufconn` instead of a custom TCP port?* Custom TCP sockets across test cases can collide with other tests and touch the OS network stack. `bufconn` writes directly into an in-memory shared buffer, bypassing the kernel TCP stack while still exercising the real gRPC stack (Protobuf serialization, HTTP/2 framing, status codes, and deadlines).
+- **Explain-back**: Wired and ran the full Phase 3 vertical slice end-to-end (`bufconn` gRPC client -> `GRPCServer` -> `Engine` -> `ScriptManager` -> real Redis Lua). Verified that sequential requests consume tokens deterministically (`2 -> 1 -> 0`) before rejecting the 4th request with `Allowed: false`, `Remaining: 0`, and `RetryAfterMs` matching the configured refill rate.
 

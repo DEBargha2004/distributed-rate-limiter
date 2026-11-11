@@ -11,7 +11,7 @@
 | ----- | -------------------------------------------------------------------------------- | ---------------------------------- | ------------ |
 | 1     | Config and hot-reload (`internal/config`)                                        | Core complete, 2 retro bricks open | 4 / 6        |
 | 2     | Atomic algorithms in Lua (`internal/redis/lua`)                                  | Core complete, 3 retro bricks open | 4 / 7        |
-| 3     | Redis client, script manager, **thin end-to-end slice**                          | In progress                        | 5 / 6        |
+| 3     | Redis client, script manager, **thin end-to-end slice**                          | Complete                           | 6 / 6        |
 | 4     | Engine: keys, rule matching, cost, multi-rule combine                            | Pending                            | 0 / 5        |
 | 5     | Resilience: breaker, local limiter, failure policy, deadlines                    | Pending                            | 0 / 4        |
 | 6     | Edge: gRPC hardening, key extractors, HTTP middleware, headers                   | Pending                            | 0 / 4        |
@@ -20,7 +20,7 @@
 | 9     | Proof runs: concurrency, benchmark, outage                                       | Pending                            | 0 / 3        |
 | 10    | Ship: README, ADRs, traceability, final cold rebuild                             | Pending                            | 0 / 3        |
 
-**Active brick**: **3.6 Smoke test (`test/smoke_test.go` or `cmd/server/`)**.
+**Active brick**: **Phase 3 Complete — Next: Phase 3 gate (cold rebuild/quiz) or Phase 4 (`4.1` Key formatting) / open retro bricks (`1.5`, `1.6`, `2.5`–`2.7`)**.
 **Suggested order for open retro bricks**: 2.4 now; 2.5, 2.6, 2.7, 1.5, 1.6 can be done at any phase boundary but must be closed before the Phase 9 gate.
 **Feedback loop**: `go test -race ./...` for unit tests; Redis integration tests (Docker, build tag) for Lua and client; `go test -bench` for latency; `CLUSTER KEYSLOT` and cluster runs for sharding.
 
@@ -71,7 +71,7 @@
 - [x] 3.3 [A] Limiter implementation (`internal/redis/limiter.go`): `Check(ctx, key, cost) -> Decision` per section 9 of the guide (no client `now`); convert Go types to `ARGV`, map script arrays (strings for floats) to `Decision`.
 - [x] 3.4 [C] Stub engine: one hard-coded rule from the Phase 1 watcher; maps `rule_id` + subject to a key; no multi-rule logic yet.
 - [x] 3.5 [B] Minimal gRPC `Allow` (proto + handler; codegen is C). Fields: `allowed, limit, remaining, retryAfterMs, resetAtMs`.
-- [ ] 3.6 [B] Smoke test: start Redis, start server, call `Allow` N times, observe allow then deny.
+- [x] 3.6 [B] Smoke test: start Redis, start server, call `Allow` N times, observe allow then deny.
 
 **Done when**: 3.2 a test flushes scripts (`SCRIPT FLUSH`) mid-run and the next call still succeeds; 3.3 table-driven tests pass for all three algorithms through the Go limiter against real Redis; 3.6 an end-to-end call shows allowed true then false with correct `remaining` and `retryAfterMs`.
 **Defend**: What happens on `NOSCRIPT` and why is a single retry enough? Why must float values cross the Lua boundary as strings?
@@ -213,3 +213,4 @@
 - **Session 1**: Phase 1 config and hot-reload complete; `-race` verified.
 - **Session 2**: Phase 2 Tasks 2.1 to 2.3 complete (microsecond lazy refill, `HMGET`/`HSET`, retry-after, idle TTL).
 - **Audit session**: guide, tasks, rules and traceability regenerated against the spec; retro bricks 1.5, 1.6, 2.4 to 2.7 added; active brick 2.4 then 3.1.
+- **Session 3**: Phase 3 complete (Bricks 3.1 to 3.6: Redis client, `ScriptManager` with `NOSCRIPT` recovery, Redis `Limiter`, stub engine, gRPC `Allow` handler, and `bufconn` end-to-end smoke test against real Redis; `-race` and `go vet` verified).
