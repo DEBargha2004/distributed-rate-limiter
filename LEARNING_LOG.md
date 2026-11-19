@@ -79,6 +79,15 @@
   - *What does a rule spanning two slots cost you in atomicity?* Redis executes Lua scripts on a single node; it does not support cross-node distributed transactions. If a script touches keys on different slots, Redis immediately rejects it with a `CROSSSLOT` error. Even if cross-node calls were attempted outside Lua, coordinating them would break single-threaded atomicity and introduce network latency spikes.
 - **Explain-back**: Implemented deterministic and collision-safe key formatting (`rl:{<escapedRuleID>:<escapedSubject>}[:<suffix>]`). Delimiter characters (`%`, `:`, `{`, `}`) are percent-encoded via `strings.NewReplacer` (with `%` escaped first) to make key generation strictly injective and prevent Redis Cluster hash tag corruption. Optional suffixes are placed outside `{...}` so auxiliary keys co-locate on the same slot without triggering `CROSSSLOT` errors. Documented decisions in `docs/adr/002-key-format-hash-tags.md`.
 
+---
+
+## Brick 4.2 [A] Multi-Dimensional Rule Matching (`internal/engine/engine.go`)
+- **Date**: 2026-11-19
+- **Prediction**: A request with multiple dimensions matches every rule whose dimension is present and non-empty. An empty string value (`""` or `"   "`) does not match.
+- **Result**: All tests in `TestEngine_MatchRules` passed with `-race` across multi-dimension binding, whitespace trimming, explicit RuleID filter, and deterministic ordering.
+- **Defense Notes**:
+  - *Why evaluate all matching rules rather than stopping at the first rule (e.g. API Key > User > IP hierarchy)?* A single request can carry multiple identities representing different threat vectors. For example, multiple devices or compromised accounts might share a single IP behind a NAT/router; checking only API keys would leave infrastructure vulnerable to IP-level DDoS. Evaluating all matching rules ensures defense-in-depth across both network and identity layers.
+- **Explain-back**: Implemented `MatchRules(req Request)` on `Engine`. It extracts the current configuration snapshot lock-free, matches rules whose configured `Dimension` exists and has a non-empty string in `req.Dimensions`, and pairs each rule with its trimmed subject value. When an explicit `RuleID` is supplied, only that rule is evaluated. Sorted results using `slices.SortFunc` by `Rule.ID` to guarantee deterministic evaluation order and reproducible testing.
 
 
 

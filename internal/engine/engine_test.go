@@ -359,3 +359,187 @@ rules:
 		t.Errorf("expected allowed after limit increased to 10, got denied: %+v", dAfterReload)
 	}
 }
+
+const multiRuleConfigYAML = `
+rules:
+  rule-ip:
+    id: "rule-ip"
+    dimension: "ip"
+    algorithm: "fixed_window"
+    limit: 100
+    window: 60s
+    default_cost: 1
+    failure_policy: "fail_closed"
+  rule-user:
+    id: "rule-user"
+    dimension: "user"
+    algorithm: "token_bucket"
+    capacity: 50
+    refill_rate: 5.0
+    limit: 50
+    window: 60s
+    default_cost: 1
+    failure_policy: "fail_closed"
+  rule-apikey:
+    id: "rule-apikey"
+    dimension: "api_key"
+    algorithm: "sliding_window"
+    limit: 1000
+    window: 3600s
+    default_cost: 1
+    failure_policy: "fail_closed"
+  rule-route:
+    id: "rule-route"
+    dimension: "route"
+    algorithm: "fixed_window"
+    limit: 10
+    window: 1s
+    default_cost: 1
+    failure_policy: "fail_closed"
+`
+
+func TestEngine_MatchRules(t *testing.T) {
+	eng, _, _, _ := setupTestEngine(t, multiRuleConfigYAML)
+
+	t.Run("matches all provided dimensions and binds subjects", func(t *testing.T) {
+		req := engine.Request{
+			Dimensions: map[config.Dimension]string{
+				config.DimensionIP:    "192.168.1.1",
+				config.DimensionUser:  "user_42",
+				config.DimensionRoute: "/api/v1/pay",
+			},
+		}
+
+		matches, err := eng.MatchRules(req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// rule-apikey should NOT match because api_key was not provided
+		if len(matches) != 3 {
+			t.Fatalf("expected 3 matches, got %d", len(matches))
+		}
+
+		// Output must be deterministically sorted alphabetically by Rule.ID
+		expectedRules := []struct {
+			id      string
+			subject string
+		}{
+			{"rule-ip", "192.168.1.1"},
+			{"rule-route", "/api/v1/pay"},
+			{"rule-user", "user_42"},
+		}
+
+		for i, expected := range expectedRules {
+			if matches[i].Rule.ID != expected.id {
+				t.Errorf("match[%d].Rule.ID = %q; want %q", i, matches[i].Rule.ID, expected.id)
+			}
+			if matches[i].Subject != expected.subject {
+				t.Errorf("match[%d].Subject = %q; want %q", i, matches[i].Subject, expected.subject)
+			}
+		}
+	})
+
+	t.Run("ignores empty or whitespace dimension values", func(t *testing.T) {
+		req := engine.Request{
+			Dimensions: map[config.Dimension]string{
+				config.DimensionIP:    "10.0.0.1",
+				config.DimensionUser:  "   ",
+				config.DimensionRoute: "",
+			},
+		}
+
+		matches, err := eng.MatchRules(req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(matches) != 1 {
+			t.Fatalf("expected 1 match (ip only), got %d", len(matches))
+		}
+		if matches[0].Rule.ID != "rule-ip" || matches[0].Subject != "10.0.0.1" {
+			t.Errorf("expected rule-ip with subject 10.0.0.1, got %+v", matches[0])
+		}
+	})
+
+	t.Run("filters by specific RuleID when provided", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "rule-ip",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionIP:   "10.0.0.1",
+				config.DimensionUser: "user_42",
+			},
+		}
+
+		matches, err := eng.MatchRules(req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(matches) != 1 {
+			t.Fatalf("expected 1 match, got %d", len(matches))
+		}
+		if matches[0].Rule.ID != "rule-ip" {
+			t.Errorf("expected rule-ip, got %s", matches[0].Rule.ID)
+		}
+	})
+
+	t.Run("returns ErrRuleNotFound for non-existent RuleID", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "unknown-rule",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionIP: "10.0.0.1",
+			},
+		}
+
+		_, err := eng.MatchRules(req)
+		if err == nil {
+			t.Fatalf("expected error for unknown RuleID")
+		}
+	})
+
+	t.Run("returns empty matches when specific RuleID dimension is missing", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "rule-apikey",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionIP: "10.0.0.1",
+			},
+		}
+
+		matches, err := eng.MatchRules(req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(matches) != 0 {
+			t.Fatalf("expected 0 matches when required dimension missing, got %d", len(matches))
+		}
+	})
+
+	t.Run("order is strictly deterministic across multiple runs", func(t *testing.T) {
+		req := engine.Request{
+			Dimensions: map[config.Dimension]string{
+				config.DimensionIP:     "1.1.1.1",
+				config.DimensionUser:   "u",
+				config.DimensionAPIKey: "k",
+				config.DimensionRoute:  "r",
+			},
+		}
+
+		for i := 0; i < 50; i++ {
+			matches, err := eng.MatchRules(req)
+			if err != nil {
+				t.Fatalf("unexpected error on run %d: %v", i, err)
+			}
+			if len(matches) != 4 {
+				t.Fatalf("expected 4 matches, got %d", len(matches))
+			}
+			// Verify exact alphabetical ordering: rule-apikey, rule-ip, rule-route, rule-user
+			expectedOrder := []string{"rule-apikey", "rule-ip", "rule-route", "rule-user"}
+			for idx, id := range expectedOrder {
+				if matches[idx].Rule.ID != id {
+					t.Fatalf("run %d failed ordering at [%d]: got %s, want %s", i, idx, matches[idx].Rule.ID, id)
+				}
+			}
+		}
+	})
+}

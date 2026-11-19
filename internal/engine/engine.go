@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"distributed-rate-limiter/internal/algorithm"
@@ -89,6 +90,86 @@ func (e *Engine) GetRule(ruleID string) (*config.Rule, error) {
 	}
 
 	return rule, nil
+}
+
+// Request represents an incoming rate limit request with its extracted dimensions.
+type Request struct {
+	// RuleID optionally limits evaluation to a specific rule ID.
+	// If empty, all rules matching the request's dimensions are evaluated.
+	RuleID string
+
+	// Dimensions maps attribute types (ip, user, api_key, route) to their extracted values.
+	Dimensions map[config.Dimension]string
+
+	// Cost represents the quota cost of this request (default is 1).
+	Cost int64
+}
+
+// MatchedRule pairs an active configuration Rule with the specific subject
+// extracted from the request's dimensions.
+type MatchedRule struct {
+	Rule    *config.Rule
+	Subject string
+}
+
+// MatchRules evaluates the incoming request against active rules in the configuration snapshot.
+// It returns all rules whose configured dimension is present and non-empty in req.Dimensions.
+// If req.RuleID is provided:
+//   - Only that specific rule is evaluated. If not found in config, returns ErrRuleNotFound.
+//   - If found, it matches only if its required dimension is non-empty in req.Dimensions.
+//
+// The returned slice is sorted alphabetically by Rule.ID for deterministic evaluation order.
+func (e *Engine) MatchRules(req Request) ([]MatchedRule, error) {
+	Ruleset := e.watcher.Get()
+	if Ruleset == nil || len(Ruleset.Rules) == 0 {
+		return nil, fmt.Errorf("ruleset not found")
+	}
+
+	if req.RuleID != "" {
+		var rule *config.Rule = nil
+		for _, rl := range Ruleset.Rules {
+			if rl.ID == req.RuleID {
+				rule = rl
+			}
+		}
+
+		if rule == nil {
+			return nil, ErrRuleNotFound
+		}
+
+		value, exists := req.Dimensions[rule.Dimension]
+		value = strings.TrimSpace(value)
+		if exists && value != "" {
+			return []MatchedRule{
+				{
+					Rule:    rule,
+					Subject: value,
+				},
+			}, nil
+		}
+
+		return []MatchedRule{}, nil
+
+	}
+
+	matched := []MatchedRule{}
+
+	for _, rl := range Ruleset.Rules {
+		value, exists := req.Dimensions[rl.Dimension]
+		trimmed := strings.TrimSpace(value)
+		if exists && trimmed != "" {
+			matched = append(matched, MatchedRule{
+				Rule:    rl,
+				Subject: trimmed,
+			})
+		}
+	}
+
+	slices.SortFunc(matched, func(a, b MatchedRule) int {
+		return strings.Compare(a.Rule.ID, b.Rule.ID)
+	})
+
+	return matched, nil
 }
 
 // Allow evaluates a rate-limit check for a specific rule and subject.
