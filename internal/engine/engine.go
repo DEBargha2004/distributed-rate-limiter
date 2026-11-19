@@ -19,14 +19,33 @@ var (
 	ErrEmptySubject     = errors.New("engine: subject cannot be empty")
 )
 
-// FormatKey generates a deterministic Redis Cluster-compatible key.
+// FormatKey generates a deterministic, collision-safe Redis Cluster-compatible key.
+// The key pattern is: rl:{<escapedRuleID>:<escapedSubject>}[:<suffix>]
 // The hash tag {ruleID:subject} ensures all keys touched for this specific rule
 // and subject co-locate on the same Redis Cluster slot without centralizing
 // all subjects of a rule onto one hot shard.
-func FormatKey(ruleID string, subject string) string {
-	// Clean/trim delimiters to prevent key injection or collision
+// Optional suffix is placed outside the hash tag to share the slot.
+func FormatKey(ruleID string, subject string, suffix ...string) string {
 	cleanRuleID := strings.TrimSpace(ruleID)
 	cleanSubject := strings.TrimSpace(subject)
+
+	// Escape delimiter characters (':', '{', '}', and '%')
+	// in cleanRuleID and cleanSubject to prevent collisions and hash-tag corruption.
+	replacer := strings.NewReplacer(
+		"%", "%25",
+		":", "%3A",
+		"{", "%7B",
+		"}", "%7D",
+	)
+
+	cleanRuleID = replacer.Replace(cleanRuleID)
+	cleanSubject = replacer.Replace(cleanSubject)
+
+	// If a non-empty suffix is provided, append it outside the hash tag to share the slot.
+	if len(suffix) > 0 && strings.TrimSpace(suffix[0]) != "" {
+		return fmt.Sprintf("rl:{%s:%s}:%s", cleanRuleID, cleanSubject, strings.TrimSpace(suffix[0]))
+	}
+
 	return fmt.Sprintf("rl:{%s:%s}", cleanRuleID, cleanSubject)
 }
 

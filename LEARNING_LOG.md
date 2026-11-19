@@ -68,3 +68,17 @@
   - *Why test gRPC over `bufconn` instead of a custom TCP port?* Custom TCP sockets across test cases can collide with other tests and touch the OS network stack. `bufconn` writes directly into an in-memory shared buffer, bypassing the kernel TCP stack while still exercising the real gRPC stack (Protobuf serialization, HTTP/2 framing, status codes, and deadlines).
 - **Explain-back**: Wired and ran the full Phase 3 vertical slice end-to-end (`bufconn` gRPC client -> `GRPCServer` -> `Engine` -> `ScriptManager` -> real Redis Lua). Verified that sequential requests consume tokens deterministically (`2 -> 1 -> 0`) before rejecting the 4th request with `Allowed: false`, `Remaining: 0`, and `RetryAfterMs` matching the configured refill rate.
 
+---
+
+## Brick 4.1 [A] Key Formatting and Hash Tags (`internal/engine/engine.go`)
+- **Date**: 2026-11-19
+- **Prediction**: Without delimiter escaping, `:` creates collisions between ambiguous `(ruleID, subject)` pairs, and `{`/`}` corrupts Redis Cluster hash tag extraction. Suffixes must live outside `{...}` to share the slot.
+- **Result**: Property-style collision tests, delimiter escaping tests, and cluster hash tag integrity tests passed under `-race` and `go vet`.
+- **Defense Notes**:
+  - *Why wrap `{ruleId:dimValue}` instead of `{ruleId}` or `{dimValue}`?* Tagging only `{ruleId}` forces all users for that rule onto a single Redis shard, creating a severe hotspot. Tagging `{ruleId:dimValue}` distributes traffic evenly across all 16,384 slots while guaranteeing any auxiliary keys for that specific (rule, subject) pair share the same slot.
+  - *What does a rule spanning two slots cost you in atomicity?* Redis executes Lua scripts on a single node; it does not support cross-node distributed transactions. If a script touches keys on different slots, Redis immediately rejects it with a `CROSSSLOT` error. Even if cross-node calls were attempted outside Lua, coordinating them would break single-threaded atomicity and introduce network latency spikes.
+- **Explain-back**: Implemented deterministic and collision-safe key formatting (`rl:{<escapedRuleID>:<escapedSubject>}[:<suffix>]`). Delimiter characters (`%`, `:`, `{`, `}`) are percent-encoded via `strings.NewReplacer` (with `%` escaped first) to make key generation strictly injective and prevent Redis Cluster hash tag corruption. Optional suffixes are placed outside `{...}` so auxiliary keys co-locate on the same slot without triggering `CROSSSLOT` errors. Documented decisions in `docs/adr/002-key-format-hash-tags.md`.
+
+
+
+

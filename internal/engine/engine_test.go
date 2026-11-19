@@ -74,33 +74,156 @@ rules:
     failure_policy: "fail_closed"
 `
 
-func TestFormatKey(t *testing.T) {
+func TestFormatKey_BasicAndSuffix(t *testing.T) {
 	tests := []struct {
+		name     string
 		ruleID   string
 		subject  string
+		suffix   []string
 		expected string
 	}{
 		{
+			name:     "standard rule and ip",
 			ruleID:   "login",
 			subject:  "192.168.1.1",
 			expected: "rl:{login:192.168.1.1}",
 		},
 		{
-			ruleID:   "api-key-tier1",
-			subject:  "usr_48291",
-			expected: "rl:{api-key-tier1:usr_48291}",
-		},
-		{
+			name:     "standard with spaces trimmed",
 			ruleID:   "  spaces  ",
 			subject:  "  user123  ",
 			expected: "rl:{spaces:user123}",
 		},
+		{
+			name:     "with single suffix",
+			ruleID:   "login",
+			subject:  "usr_48291",
+			suffix:   []string{"ts"},
+			expected: "rl:{login:usr_48291}:ts",
+		},
+		{
+			name:     "with empty suffix ignored",
+			ruleID:   "login",
+			subject:  "usr_48291",
+			suffix:   []string{""},
+			expected: "rl:{login:usr_48291}",
+		},
 	}
 
 	for _, tt := range tests {
-		got := engine.FormatKey(tt.ruleID, tt.subject)
-		if got != tt.expected {
-			t.Errorf("FormatKey(%q, %q) = %q; expected %q", tt.ruleID, tt.subject, got, tt.expected)
+		t.Run(tt.name, func(t *testing.T) {
+			got := engine.FormatKey(tt.ruleID, tt.subject, tt.suffix...)
+			if got != tt.expected {
+				t.Errorf("FormatKey(%q, %q, %v) = %q; want %q", tt.ruleID, tt.subject, tt.suffix, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFormatKey_DelimiterEscaping(t *testing.T) {
+	tests := []struct {
+		name     string
+		ruleID   string
+		subject  string
+		expected string
+	}{
+		{
+			name:     "colons in subject",
+			ruleID:   "auth",
+			subject:  "user:admin:99",
+			expected: "rl:{auth:user%3Aadmin%3A99}",
+		},
+		{
+			name:     "colons in rule ID",
+			ruleID:   "api:v1:login",
+			subject:  "10.0.0.1",
+			expected: "rl:{api%3Av1%3Alogin:10.0.0.1}",
+		},
+		{
+			name:     "braces in subject",
+			ruleID:   "login",
+			subject:  "guest{vip}user",
+			expected: "rl:{login:guest%7Bvip%7Duser}",
+		},
+		{
+			name:     "percent signs escaped",
+			ruleID:   "rule%1",
+			subject:  "user%3A1",
+			expected: "rl:{rule%251:user%253A1}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := engine.FormatKey(tt.ruleID, tt.subject)
+			if got != tt.expected {
+				t.Errorf("FormatKey(%q, %q) = %q; want %q", tt.ruleID, tt.subject, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFormatKey_CollisionSafetyProperty(t *testing.T) {
+	// Ambiguous pairs that would collide under naive "rl:{" + ruleID + ":" + subject + "}"
+	collisionPairs := []struct {
+		pairA [2]string
+		pairB [2]string
+	}{
+		{
+			pairA: [2]string{"api:v1", "user10"},
+			pairB: [2]string{"api", "v1:user10"},
+		},
+		{
+			pairA: [2]string{"user", "1:2:3"},
+			pairB: [2]string{"user:1", "2:3"},
+		},
+		{
+			pairA: [2]string{"rule", "user%3Atest"},
+			pairB: [2]string{"rule:user", "test"},
+		},
+		{
+			pairA: [2]string{"rule{1}", "user"},
+			pairB: [2]string{"rule", "{1}:user"},
+		},
+	}
+
+	for i, cp := range collisionPairs {
+		keyA := engine.FormatKey(cp.pairA[0], cp.pairA[1])
+		keyB := engine.FormatKey(cp.pairB[0], cp.pairB[1])
+
+		if keyA == keyB {
+			t.Fatalf("Collision detected for pair %d! Both produced %q: pairA=%v, pairB=%v",
+				i, keyA, cp.pairA, cp.pairB)
+		}
+	}
+}
+
+func TestFormatKey_RedisClusterHashTagIntegrity(t *testing.T) {
+	// Verify that generated keys contain exactly one '{' and one '}'
+	// so Redis Cluster CRC16 extracts the exact intended tag.
+	inputs := [][2]string{
+		{"auth:login", "user{evil}123"},
+		{"{rule}", "{subject}"},
+		{"nested{{}}", "user::123"},
+	}
+
+	for _, in := range inputs {
+		key := engine.FormatKey(in[0], in[1], "suffix")
+		// Count occurrences of '{' and '}'
+		openBraces := 0
+		closeBraces := 0
+		for _, ch := range key {
+			if ch == '{' {
+				openBraces++
+			}
+			if ch == '}' {
+				closeBraces++
+			}
+		}
+
+		if openBraces != 1 || closeBraces != 1 {
+			t.Errorf("FormatKey(%q, %q) produced key %q with %d '{' and %d '}'; expected exactly 1 of each",
+				in[0], in[1], key, openBraces, closeBraces)
 		}
 	}
 }
