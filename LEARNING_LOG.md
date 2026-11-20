@@ -89,5 +89,17 @@
   - *Why evaluate all matching rules rather than stopping at the first rule (e.g. API Key > User > IP hierarchy)?* A single request can carry multiple identities representing different threat vectors. For example, multiple devices or compromised accounts might share a single IP behind a NAT/router; checking only API keys would leave infrastructure vulnerable to IP-level DDoS. Evaluating all matching rules ensures defense-in-depth across both network and identity layers.
 - **Explain-back**: Implemented `MatchRules(req Request)` on `Engine`. It extracts the current configuration snapshot lock-free, matches rules whose configured `Dimension` exists and has a non-empty string in `req.Dimensions`, and pairs each rule with its trimmed subject value. When an explicit `RuleID` is supplied, only that rule is evaluated. Sorted results using `slices.SortFunc` by `Rule.ID` to guarantee deterministic evaluation order and reproducible testing.
 
+---
+
+## Brick 4.3 [A] Combine Decisions (`internal/engine/engine.go`)
+- **Date**: 2026-11-20
+- **Prediction**: Initially predicted early return on deny and refunding on failure, but realized early return causes client retry ping-pong and refunding across Redis shards requires complex distributed transactions while breaking natural DDoS backpressure.
+- **Result**: Unit tests in `TestCombine` and end-to-end multi-rule evaluations in `TestEngine_AllowRequest` passed under `-race`.
+- **Defense Notes**:
+  - *Why can't multi-rule evaluation be executed in a single atomic Lua script?* Different rules for the same request produce different hash tags `rl:{<ruleId>:<dimValue>}`, causing them to hash to different Redis Cluster slots. Redis forbids cross-slot Lua scripts (`CROSSSLOT` error).
+  - *Why accept partial consumption instead of rollback?* Refunding tokens across multiple Redis nodes is complex, introduces race conditions and network failure states, and requires distributed 2PC. Furthermore, denied requests still consumed gateway and Redis resources; deducting quota provides appropriate backpressure against abuse.
+- **Explain-back**: Implemented multi-rule decision combination per Spec R13. If any matching rule denies, the aggregate verdict is `Allowed = false`, and `RetryAfter` is set to the maximum `RetryAfter` across all denying rules (the most restrictive wait). `Remaining` reflects the tightest bottleneck across evaluated rules (`min(Remaining)`), and unmetered requests return `math.MaxInt64`. Documented the partial consumption architecture and trade-offs in `docs/adr/003-multi-rule-semantics.md`.
+
+
 
 

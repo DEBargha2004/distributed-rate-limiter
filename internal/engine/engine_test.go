@@ -2,13 +2,16 @@ package engine_test
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
 
+	"distributed-rate-limiter/internal/algorithm"
 	"distributed-rate-limiter/internal/config"
 	"distributed-rate-limiter/internal/engine"
 	"distributed-rate-limiter/internal/redis"
@@ -542,4 +545,213 @@ func TestEngine_MatchRules(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestCombine(t *testing.T) {
+	now := time.Now()
+
+	t.Run("empty decisions returns allowed with max remaining", func(t *testing.T) {
+		got := engine.Combine(nil)
+		if !got.Allowed {
+			t.Errorf("expected allowed=true for empty decisions, got %v", got.Allowed)
+		}
+		if got.Remaining != math.MaxInt64 {
+			t.Errorf("expected remaining=MaxInt64, got %d", got.Remaining)
+		}
+		if got.RetryAfter != 0 {
+			t.Errorf("expected retryAfter=0, got %v", got.RetryAfter)
+		}
+	})
+
+	t.Run("all allowed returns minimum remaining", func(t *testing.T) {
+		decisions := []algorithm.Decision{
+			{
+				Allowed:    true,
+				Limit:      100,
+				Remaining:  50,
+				RetryAfter: 0,
+				ResetAt:    now.Add(10 * time.Second),
+				RuleID:     "rule-ip",
+			},
+			{
+				Allowed:    true,
+				Limit:      10,
+				Remaining:  3,
+				RetryAfter: 0,
+				ResetAt:    now.Add(30 * time.Second),
+				RuleID:     "rule-user",
+			},
+		}
+
+		got := engine.Combine(decisions)
+		if !got.Allowed {
+			t.Errorf("expected allowed=true, got false")
+		}
+		if got.Remaining != 3 {
+			t.Errorf("expected remaining=3 (bottleneck), got %d", got.Remaining)
+		}
+		if got.RuleID != "rule-user" {
+			t.Errorf("expected RuleID=rule-user (bottleneck rule), got %s", got.RuleID)
+		}
+		if got.RetryAfter != 0 {
+			t.Errorf("expected retryAfter=0, got %v", got.RetryAfter)
+		}
+	})
+
+	t.Run("one denied returns allowed=false and denying rule retryAfter", func(t *testing.T) {
+		decisions := []algorithm.Decision{
+			{
+				Allowed:    true,
+				Limit:      100,
+				Remaining:  40,
+				RetryAfter: 0,
+				ResetAt:    now.Add(5 * time.Second),
+				RuleID:     "rule-ip",
+			},
+			{
+				Allowed:    false,
+				Limit:      10,
+				Remaining:  0,
+				RetryAfter: 15 * time.Second,
+				ResetAt:    now.Add(15 * time.Second),
+				RuleID:     "rule-user",
+			},
+		}
+
+		got := engine.Combine(decisions)
+		if got.Allowed {
+			t.Errorf("expected allowed=false when one denies, got true")
+		}
+		if got.Remaining != 0 {
+			t.Errorf("expected remaining=0, got %d", got.Remaining)
+		}
+		if got.RetryAfter != 15*time.Second {
+			t.Errorf("expected retryAfter=15s, got %v", got.RetryAfter)
+		}
+		if got.RuleID != "rule-user" {
+			t.Errorf("expected RuleID=rule-user, got %s", got.RuleID)
+		}
+	})
+
+	t.Run("multiple denied returns maximum retryAfter (most restrictive)", func(t *testing.T) {
+		decisions := []algorithm.Decision{
+			{
+				Allowed:    false,
+				Limit:      50,
+				Remaining:  0,
+				RetryAfter: 50 * time.Millisecond,
+				ResetAt:    now.Add(50 * time.Millisecond),
+				RuleID:     "rule-ip",
+			},
+			{
+				Allowed:    false,
+				Limit:      10,
+				Remaining:  0,
+				RetryAfter: 45 * time.Second,
+				ResetAt:    now.Add(45 * time.Second),
+				RuleID:     "rule-route",
+			},
+			{
+				Allowed:    false,
+				Limit:      5,
+				Remaining:  0,
+				RetryAfter: 5 * time.Second,
+				ResetAt:    now.Add(5 * time.Second),
+				RuleID:     "rule-user",
+			},
+		}
+
+		got := engine.Combine(decisions)
+		if got.Allowed {
+			t.Errorf("expected allowed=false, got true")
+		}
+		if got.RetryAfter != 45*time.Second {
+			t.Errorf("expected retryAfter=45s (max wait), got %v", got.RetryAfter)
+		}
+		if got.RuleID != "rule-route" {
+			t.Errorf("expected RuleID=rule-route (most restrictive rule), got %s", got.RuleID)
+		}
+	})
+}
+
+const combineTestConfigYAML = `
+rules:
+  ip-rule:
+    id: "ip-rule"
+    dimension: "ip"
+    algorithm: "fixed_window"
+    limit: 5
+    window: 10s
+    default_cost: 1
+    failure_policy: "fail_closed"
+  user-rule:
+    id: "user-rule"
+    dimension: "user"
+    algorithm: "fixed_window"
+    limit: 2
+    window: 10s
+    default_cost: 1
+    failure_policy: "fail_closed"
+`
+
+func TestEngine_AllowRequest(t *testing.T) {
+	ctx := context.Background()
+	eng, _, _, _ := setupTestEngine(t, combineTestConfigYAML)
+
+	req := engine.Request{
+		Dimensions: map[config.Dimension]string{
+			config.DimensionIP:   "192.168.1.1",
+			config.DimensionUser: "alice",
+		},
+	}
+
+	// Request 1: both have capacity (ip remaining 4, user remaining 1) -> Allowed: true, Remaining: 1
+	d1, err := eng.AllowRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error on req 1: %v", err)
+	}
+	if !d1.Allowed || d1.Remaining != 1 {
+		t.Fatalf("req 1: expected allowed=true, remaining=1; got allowed=%v, remaining=%d", d1.Allowed, d1.Remaining)
+	}
+
+	// Request 2: both have capacity (ip remaining 3, user remaining 0) -> Allowed: true, Remaining: 0
+	d2, err := eng.AllowRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error on req 2: %v", err)
+	}
+	if !d2.Allowed || d2.Remaining != 0 {
+		t.Fatalf("req 2: expected allowed=true, remaining=0; got allowed=%v, remaining=%d", d2.Allowed, d2.Remaining)
+	}
+
+	// Request 3: IP has capacity (3 left), but User is exhausted -> Denied!
+	d3, err := eng.AllowRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error on req 3: %v", err)
+	}
+	if d3.Allowed {
+		t.Fatalf("req 3: expected allowed=false (user exhausted), got true")
+	}
+	if d3.RuleID != "user-rule" {
+		t.Errorf("req 3: expected RuleID=user-rule, got %s", d3.RuleID)
+	}
+	if d3.RetryAfter <= 0 {
+		t.Errorf("req 3: expected retryAfter > 0, got %v", d3.RetryAfter)
+	}
+
+	// Verify Partial Consumption (ADR 003):
+	// IP rule still evaluated and consumed its token during Request 3 (ip capacity was 3, should now be 2).
+	// A request for the same IP under an IP-only request must see remaining == 1 (since 5 limit - 3 consumed = 2 left, consuming 1 leaves 1).
+	ipReq := engine.Request{
+		RuleID: "ip-rule",
+		Dimensions: map[config.Dimension]string{
+			config.DimensionIP: "192.168.1.1",
+		},
+	}
+	dIP, err := eng.AllowRequest(ctx, ipReq)
+	if err != nil {
+		t.Fatalf("unexpected error on ipReq: %v", err)
+	}
+	if !dIP.Allowed || dIP.Remaining != 1 {
+		t.Fatalf("expected IP remaining=1 after partial consumption, got allowed=%v, remaining=%d", dIP.Allowed, dIP.Remaining)
+	}
 }

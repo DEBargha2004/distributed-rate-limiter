@@ -12,7 +12,7 @@
 | 1     | Config and hot-reload (`internal/config`)                                        | Core complete, 2 retro bricks open | 4 / 6        |
 | 2     | Atomic algorithms in Lua (`internal/redis/lua`)                                  | Core complete, 3 retro bricks open | 4 / 7        |
 | 3     | Redis client, script manager, **thin end-to-end slice**                          | Complete                           | 6 / 6        |
-| 4     | Engine: keys, rule matching, cost, multi-rule combine                            | In progress                        | 2 / 5        |
+| 4     | Engine: keys, rule matching, cost, multi-rule combine                            | In progress                        | 3 / 5        |
 | 5     | Resilience: breaker, local limiter, failure policy, deadlines                    | Pending                            | 0 / 4        |
 | 6     | Edge: gRPC hardening, key extractors, HTTP middleware, headers                   | Pending                            | 0 / 4        |
 | 7     | Observability: metrics and `/metrics` (swappable with 6)                         | Pending                            | 0 / 4        |
@@ -20,7 +20,7 @@
 | 9     | Proof runs: concurrency, benchmark, outage                                       | Pending                            | 0 / 3        |
 | 10    | Ship: README, ADRs, traceability, final cold rebuild                             | Pending                            | 0 / 3        |
 
-**Active brick**: **Brick 4.3 [A] Combine decisions (`internal/engine/engine.go`)**.
+**Active brick**: **Brick 4.4 [B] Cost per request end to end**.
 **Suggested order for open retro bricks**: 2.4 now; 2.5, 2.6, 2.7, 1.5, 1.6 can be done at any phase boundary but must be closed before the Phase 9 gate.
 **Feedback loop**: `go test -race ./...` for unit tests; Redis integration tests (Docker, build tag) for Lua and client; `go test -bench` for latency; `CLUSTER KEYSLOT` and cluster runs for sharding.
 
@@ -85,7 +85,7 @@
 
 - [x] 4.1 [A] Key formatting (`internal/engine/engine.go`): `rl:{<ruleId>:<dimValue>}[:suffix]`, deterministic and collision-safe (delimiter escaping). `docs/adr/002-key-format-hash-tags.md` records why the tag wraps rule id AND dimension value.
 - [x] 4.2 [A] Rule matching: select every rule that matches the request dimensions (user, API key, IP, route, combinations).
-- [ ] 4.3 [A] Combine decisions: apply all matching rules, deny if any denies, return the most restrictive `retryAfter`. `docs/adr/003-multi-rule-semantics.md` documents partial consumption when one rule denies.
+- [x] 4.3 [A] Combine decisions: apply all matching rules, deny if any denies, return the most restrictive `retryAfter`. `docs/adr/003-multi-rule-semantics.md` documents partial consumption when one rule denies.
 - [ ] 4.4 [B] Cost per request end to end (request, engine, Lua arg), including a cost larger than capacity (must deny, not loop).
 - [ ] 4.5 [B] Structured decision log line includes rule id, algorithm, rule-set version (from 1.5), decision.
 

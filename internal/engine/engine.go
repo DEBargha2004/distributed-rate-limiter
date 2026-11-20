@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"distributed-rate-limiter/internal/algorithm"
 	"distributed-rate-limiter/internal/config"
@@ -195,4 +197,120 @@ func (e *Engine) Allow(ctx context.Context, ruleID string, subject string, cost 
 
 	// 3. Delegate execution to Redis Lua
 	return limiter.Check(ctx, key, cost)
+}
+
+// Combine merges multiple rate-limiting decisions into an aggregate decision per Spec R13.
+// Semantics:
+//   - Empty input: If decisions is empty, return Allowed: true, Remaining: math.MaxInt64.
+//   - Deny-if-any: The aggregate is Allowed only if ALL input decisions are Allowed.
+//   - Most restrictive wait: If denied, RetryAfter is max(RetryAfter) across all denying decisions.
+//   - ResetAt: If denied, ResetAt corresponds to the latest reset time among the denying decisions.
+//     If all allowed, ResetAt is the latest reset time among all decisions.
+//   - Bottleneck remaining: Remaining is min(Remaining) across all decisions.
+//   - RuleID & Limit: Attributed to the decision dictating the outcome:
+//     if denied, the rule with the max RetryAfter; if allowed, the rule with the min Remaining.
+func Combine(decisions []algorithm.Decision) algorithm.Decision {
+	// =========================================================================
+	// LEARNER IMPLEMENTATION AREA [Brick 4.3]:
+	// Implement multi-decision aggregation per Spec R13.
+	// =========================================================================
+
+	if len(decisions) == 0 {
+		return algorithm.Decision{
+			Allowed:   true,
+			Remaining: math.MaxInt64,
+		}
+	}
+
+	hasDenied := false
+	var worstDenial algorithm.Decision
+	bottleneck := decisions[0]
+	var latestReset time.Time
+
+	for _, d := range decisions {
+		if d.ResetAt.After(latestReset) {
+			latestReset = d.ResetAt
+		}
+
+		if d.Remaining < bottleneck.Remaining {
+			bottleneck = d
+		}
+
+		if !d.Allowed {
+			hasDenied = true
+			if d.RetryAfter > worstDenial.RetryAfter {
+				worstDenial = d
+			}
+		}
+
+	}
+
+	if hasDenied {
+		return algorithm.Decision{
+			Allowed:    false,
+			RuleID:     worstDenial.RuleID,
+			Limit:      worstDenial.Limit,
+			Remaining:  bottleneck.Remaining,
+			RetryAfter: worstDenial.RetryAfter,
+			ResetAt:    latestReset,
+		}
+	}
+
+	return algorithm.Decision{
+		Allowed:    true,
+		RetryAfter: 0,
+		Remaining:  bottleneck.Remaining,
+		Limit:      bottleneck.Limit,
+		ResetAt:    latestReset,
+		RuleID:     bottleneck.RuleID,
+	}
+
+}
+
+// AllowRequest evaluates an incoming Request against all matching rules in the active configuration.
+// It executes each matching rule against Redis via limiter.Check, accepts partial consumption
+// across Redis Cluster slots per ADR 003, and combines the results via Combine.
+func (e *Engine) AllowRequest(ctx context.Context, req Request) (algorithm.Decision, error) {
+	// =========================================================================
+	// LEARNER IMPLEMENTATION AREA [Brick 4.3]:
+	// Step 1: Match rules using e.MatchRules(req).
+	// Step 2: If len(matches) == 0, return Combine(nil), nil.
+	// Step 3: For each match, determine effective cost (req.Cost, fallback to rule.DefaultCost, or 1).
+	//         Format key using FormatKey(rule.ID, match.Subject),
+	//         instantiate or reuse limiter via redis.NewLimiter,
+	//         and execute limiter.Check(ctx, key, cost).
+	// Step 4: Collect all decisions and return Combine(decisions), nil.
+	// =========================================================================
+
+	matches, err := e.MatchRules(req)
+
+	if err != nil {
+		return algorithm.Decision{}, err
+	}
+
+	if len(matches) == 0 {
+		return Combine(nil), nil
+	}
+
+	Decisions := []algorithm.Decision{}
+
+	for _, match := range matches {
+		EffectiveCost := 0
+
+		if req.Cost != 0 {
+			EffectiveCost = int(req.Cost)
+		} else if match.Rule.DefaultCost != 0 {
+			EffectiveCost = int(match.Rule.DefaultCost)
+		} else {
+			EffectiveCost = 1
+		}
+
+		decision, err := e.Allow(ctx, match.Rule.ID, match.Subject, int64(EffectiveCost))
+		if err != nil {
+			return algorithm.Decision{}, err
+		}
+		Decisions = append(Decisions, decision)
+	}
+
+	return Combine(Decisions), nil
 }
