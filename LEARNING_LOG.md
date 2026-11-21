@@ -100,6 +100,18 @@
   - *Why accept partial consumption instead of rollback?* Refunding tokens across multiple Redis nodes is complex, introduces race conditions and network failure states, and requires distributed 2PC. Furthermore, denied requests still consumed gateway and Redis resources; deducting quota provides appropriate backpressure against abuse.
 - **Explain-back**: Implemented multi-rule decision combination per Spec R13. If any matching rule denies, the aggregate verdict is `Allowed = false`, and `RetryAfter` is set to the maximum `RetryAfter` across all denying rules (the most restrictive wait). `Remaining` reflects the tightest bottleneck across evaluated rules (`min(Remaining)`), and unmetered requests return `math.MaxInt64`. Documented the partial consumption architecture and trade-offs in `docs/adr/003-multi-rule-semantics.md`.
 
+---
+
+## Brick 4.4 [B] Cost Per Request End to End (`internal/engine/engine.go`)
+- **Date**: 2026-11-21
+- **Prediction**: Cost 0 falls back to rule `DefaultCost` (2) and consumes 2; Cost 5 consumes 5; Cost 15 exceeds capacity 10 and cannot succeed regardless of elapsed wait time.
+- **Result**: Unit tests in `TestResolveCost`, engine integration tests in `TestEngine_CostHandling`, and end-to-end gRPC tests in `TestSmoke_VariableCost_EndToEnd` passed under `-race`.
+- **Defense Notes**:
+  - *Why reject cost > capacity immediately without mutating tokens?* If a request requires more tokens than the bucket's maximum capacity, it can never be satisfied even when the bucket is full. Mutating or holding quota would unfairly starve concurrent legitimate requests that fit within capacity.
+  - *What risk does returning a non-zero RetryAfter introduce to automated clients?* Returning a positive `RetryAfter` falsely signals that the request will succeed if the client waits and retries. Automated clients (e.g. gRPC retry interceptors) will loop repeatedly, wasting network bandwidth, CPU cycles, and flooding the rate limiting service.
+- **Explain-back**: Implemented `ResolveCost` to enforce the quota cost resolution hierarchy: explicit positive request cost (`req.Cost > 0`), fallback to configured rule default (`rule.DefaultCost > 0`), and fallback to 1. Non-positive values are sanitized to prevent clients from gaining quota or bypassing limits. In Redis Lua, requests with cost > available tokens immediately deny without mutating stored bucket state. End-to-end tests confirmed cost 5 consumes 5, fallbacks work, and oversized requests fail fast.
+
+
 
 
 

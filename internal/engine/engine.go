@@ -267,15 +267,40 @@ func Combine(decisions []algorithm.Decision) algorithm.Decision {
 
 }
 
+// ResolveCost calculates the effective quota cost for a request and rule according to
+// the resolution hierarchy:
+//  1. reqCost if reqCost > 0
+//  2. defaultCost if defaultCost > 0
+//  3. 1 (standard single-unit fallback)
+//
+// Any non-positive cost (zero or negative) is sanitized to prevent callers
+// from bypassing rate limits or gaining quota.
+func ResolveCost(reqCost, defaultCost int64) int64 {
+	// =========================================================================
+	// LEARNER IMPLEMENTATION AREA [Brick 4.4]:
+	// Implement cost resolution hierarchy:
+	// - If reqCost > 0, return reqCost
+	// - Else if defaultCost > 0, return defaultCost
+	// - Else return 1
+	// =========================================================================
+	if reqCost > 0 {
+		return reqCost
+	} else if defaultCost > 0 {
+		return defaultCost
+	} else {
+		return 1
+	}
+}
+
 // AllowRequest evaluates an incoming Request against all matching rules in the active configuration.
 // It executes each matching rule against Redis via limiter.Check, accepts partial consumption
 // across Redis Cluster slots per ADR 003, and combines the results via Combine.
 func (e *Engine) AllowRequest(ctx context.Context, req Request) (algorithm.Decision, error) {
 	// =========================================================================
-	// LEARNER IMPLEMENTATION AREA [Brick 4.3]:
+	// LEARNER IMPLEMENTATION AREA [Brick 4.3 & 4.4]:
 	// Step 1: Match rules using e.MatchRules(req).
 	// Step 2: If len(matches) == 0, return Combine(nil), nil.
-	// Step 3: For each match, determine effective cost (req.Cost, fallback to rule.DefaultCost, or 1).
+	// Step 3: For each match, determine effective cost using ResolveCost(req.Cost, match.Rule.DefaultCost).
 	//         Format key using FormatKey(rule.ID, match.Subject),
 	//         instantiate or reuse limiter via redis.NewLimiter,
 	//         and execute limiter.Check(ctx, key, cost).
@@ -295,17 +320,9 @@ func (e *Engine) AllowRequest(ctx context.Context, req Request) (algorithm.Decis
 	Decisions := []algorithm.Decision{}
 
 	for _, match := range matches {
-		EffectiveCost := 0
+		cost := ResolveCost(req.Cost, match.Rule.DefaultCost)
 
-		if req.Cost != 0 {
-			EffectiveCost = int(req.Cost)
-		} else if match.Rule.DefaultCost != 0 {
-			EffectiveCost = int(match.Rule.DefaultCost)
-		} else {
-			EffectiveCost = 1
-		}
-
-		decision, err := e.Allow(ctx, match.Rule.ID, match.Subject, int64(EffectiveCost))
+		decision, err := e.Allow(ctx, match.Rule.ID, match.Subject, cost)
 		if err != nil {
 			return algorithm.Decision{}, err
 		}

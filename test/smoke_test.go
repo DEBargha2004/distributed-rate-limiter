@@ -195,3 +195,51 @@ rules:
 		}
 	}
 }
+
+func TestSmoke_VariableCost_EndToEnd(t *testing.T) {
+	ruleYAML := `
+rules:
+  cost-smoke-rule:
+    id: cost-smoke-rule
+    dimension: user
+    algorithm: token_bucket
+    capacity: 10
+    refill_rate: 0.1
+    default_cost: 2
+    failure_policy: fail_closed
+`
+	client := setupSmokeHarness(t, ruleYAML)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	testSubject := fmt.Sprintf("cost-smoke-%d", time.Now().UnixNano())
+
+	// Call 1: Explicit Cost 5 from capacity 10 -> Allowed=true, Remaining=5
+	res1, err := client.Allow(ctx, &pb.AllowRequest{Key: testSubject, RuleId: "cost-smoke-rule", Cost: 5})
+	if err != nil {
+		t.Fatalf("call 1 error: %v", err)
+	}
+	if !res1.Allowed || res1.Remaining != 5 {
+		t.Fatalf("call 1: expected allowed=true, remaining=5; got allowed=%v, remaining=%d", res1.Allowed, res1.Remaining)
+	}
+
+	// Call 2: Unspecified Cost (0) falls back to default_cost (2) -> Allowed=true, Remaining=3
+	res2, err := client.Allow(ctx, &pb.AllowRequest{Key: testSubject, RuleId: "cost-smoke-rule", Cost: 0})
+	if err != nil {
+		t.Fatalf("call 2 error: %v", err)
+	}
+	if !res2.Allowed || res2.Remaining != 3 {
+		t.Fatalf("call 2: expected allowed=true, remaining=3; got allowed=%v, remaining=%d", res2.Allowed, res2.Remaining)
+	}
+
+	// Call 3: Cost larger than capacity (15 > 10) -> Allowed=false, Remaining=3
+	res3, err := client.Allow(ctx, &pb.AllowRequest{Key: testSubject, RuleId: "cost-smoke-rule", Cost: 15})
+	if err != nil {
+		t.Fatalf("call 3 error: %v", err)
+	}
+	if res3.Allowed || res3.Remaining != 3 {
+		t.Fatalf("call 3: expected allowed=false, remaining=3; got allowed=%v, remaining=%d", res3.Allowed, res3.Remaining)
+	}
+}
+

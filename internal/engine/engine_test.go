@@ -755,3 +755,189 @@ func TestEngine_AllowRequest(t *testing.T) {
 		t.Fatalf("expected IP remaining=1 after partial consumption, got allowed=%v, remaining=%d", dIP.Allowed, dIP.Remaining)
 	}
 }
+
+func TestResolveCost(t *testing.T) {
+	tests := []struct {
+		name        string
+		reqCost     int64
+		defaultCost int64
+		want        int64
+	}{
+		{
+			name:        "positive request cost takes precedence",
+			reqCost:     5,
+			defaultCost: 2,
+			want:        5,
+		},
+		{
+			name:        "zero request cost falls back to default cost",
+			reqCost:     0,
+			defaultCost: 3,
+			want:        3,
+		},
+		{
+			name:        "negative request cost treated as unset and falls back to default cost",
+			reqCost:     -5,
+			defaultCost: 4,
+			want:        4,
+		},
+		{
+			name:        "zero request cost and zero default cost falls back to 1",
+			reqCost:     0,
+			defaultCost: 0,
+			want:        1,
+		},
+		{
+			name:        "negative request cost and negative default cost falls back to 1",
+			reqCost:     -1,
+			defaultCost: -2,
+			want:        1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := engine.ResolveCost(tt.reqCost, tt.defaultCost)
+			if got != tt.want {
+				t.Errorf("ResolveCost(%d, %d) = %d; want %d", tt.reqCost, tt.defaultCost, got, tt.want)
+			}
+		})
+	}
+}
+
+const costTestConfigYAML = `
+rules:
+  tb-cost-rule:
+    id: "tb-cost-rule"
+    dimension: "user"
+    algorithm: "token_bucket"
+    capacity: 10
+    refill_rate: 0.1
+    limit: 10
+    window: 60s
+    default_cost: 2
+    failure_policy: "fail_closed"
+  fw-cost-rule:
+    id: "fw-cost-rule"
+    dimension: "ip"
+    algorithm: "fixed_window"
+    limit: 10
+    window: 10s
+    default_cost: 1
+    failure_policy: "fail_closed"
+`
+
+func TestEngine_CostHandling(t *testing.T) {
+	ctx := context.Background()
+	eng, _, _, _ := setupTestEngine(t, costTestConfigYAML)
+
+	t.Run("cost 5 consumes 5 tokens from capacity 10", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "tb-cost-rule",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionUser: "charlie",
+			},
+			Cost: 5,
+		}
+
+		d, err := eng.AllowRequest(ctx, req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !d.Allowed {
+			t.Fatalf("expected request with cost 5 to be allowed, got denied")
+		}
+		if d.Remaining != 5 {
+			t.Fatalf("expected remaining=5 (10 - 5), got %d", d.Remaining)
+		}
+	})
+
+	t.Run("cost 0 falls back to rule default_cost 2", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "tb-cost-rule",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionUser: "charlie",
+			},
+			Cost: 0, // should fall back to default_cost = 2
+		}
+
+		d, err := eng.AllowRequest(ctx, req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !d.Allowed {
+			t.Fatalf("expected request with default cost to be allowed, got denied")
+		}
+		// Previous remaining was 5; 5 - 2 = 3
+		if d.Remaining != 3 {
+			t.Fatalf("expected remaining=3 (5 - 2), got %d", d.Remaining)
+		}
+	})
+
+	t.Run("cost larger than capacity (15 > 10) must deny immediately and not consume tokens", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "tb-cost-rule",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionUser: "charlie",
+			},
+			Cost: 15, // exceeds total capacity 10
+		}
+
+		d, err := eng.AllowRequest(ctx, req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d.Allowed {
+			t.Fatalf("expected request with cost 15 > capacity 10 to be denied, got allowed")
+		}
+		// Crucial: tokens must NOT have been deducted by the rejected request
+		if d.Remaining != 3 {
+			t.Fatalf("expected remaining to stay unchanged at 3, got %d", d.Remaining)
+		}
+	})
+
+	t.Run("subsequent valid request consumes remaining tokens", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "tb-cost-rule",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionUser: "charlie",
+			},
+			Cost: 3, // exactly exhausts remaining 3
+		}
+
+		d, err := eng.AllowRequest(ctx, req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !d.Allowed {
+			t.Fatalf("expected request with cost 3 to be allowed, got denied")
+		}
+		if d.Remaining != 0 {
+			t.Fatalf("expected remaining=0 (3 - 3), got %d", d.Remaining)
+		}
+	})
+
+	t.Run("negative cost is sanitized defensively and cannot credit quota", func(t *testing.T) {
+		req := engine.Request{
+			RuleID: "tb-cost-rule",
+			Dimensions: map[config.Dimension]string{
+				config.DimensionUser: "charlie",
+			},
+			Cost: -10, // malicious/negative cost attempt
+		}
+
+		d, err := eng.AllowRequest(ctx, req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Bucket has 0 remaining tokens; negative cost must NOT add tokens.
+		// Sanitizing to default_cost (2) means 2 > 0 -> denied.
+		if d.Allowed {
+			t.Fatalf("expected negative cost to be sanitized and denied when bucket is empty, got allowed")
+		}
+		if d.Remaining != 0 {
+			t.Fatalf("expected remaining=0, got %d", d.Remaining)
+		}
+	})
+}
+
