@@ -171,3 +171,88 @@ func TestWatcher_ConcurrentReadsAndReload(t *testing.T) {
 	close(stopCh)
 	wg.Wait()
 }
+
+const sampleUnversionedYAML = `
+rules:
+  login_limit:
+    id: "login_limit"
+    dimension: "ip"
+    algorithm: "fixed_window"
+    limit: 5
+    window: 10s
+    failure_policy: "fail_closed"
+`
+
+const sampleModifiedUnversionedYAML = `
+rules:
+  login_limit:
+    id: "login_limit"
+    dimension: "ip"
+    algorithm: "fixed_window"
+    limit: 10
+    window: 10s
+    failure_policy: "fail_closed"
+`
+
+func TestWatcher_VersionStamping(t *testing.T) {
+	// 1. Initial load without explicit version field should generate content hash stamp
+	f := writeTempConfigFile(t, sampleUnversionedYAML)
+	w, err := NewWatcher(f)
+	if err != nil {
+		t.Fatalf("failed to init watcher: %v", err)
+	}
+
+	initialRS := w.Get()
+	if initialRS == nil {
+		t.Fatalf("expected non-nil ruleset")
+	}
+	if initialRS.Version == "" {
+		t.Fatalf("expected auto-generated content hash version for unversioned config, got empty string")
+	}
+
+	// 2. Reloading identical content produces identical version hash
+	if err := w.Reload(); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	reloadedRS := w.Get()
+	if reloadedRS.Version != initialRS.Version {
+		t.Fatalf("expected identical content hash on unchanged reload, got %s vs %s", reloadedRS.Version, initialRS.Version)
+	}
+
+	// 3. Modifying file content produces a different version hash
+	if err := os.WriteFile(f, []byte(sampleModifiedUnversionedYAML), 0644); err != nil {
+		t.Fatalf("failed to update config: %v", err)
+	}
+	if err := w.Reload(); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	modifiedRS := w.Get()
+	if modifiedRS.Version == "" || modifiedRS.Version == initialRS.Version {
+		t.Fatalf("expected new version hash after content change, got %s (initial was %s)", modifiedRS.Version, initialRS.Version)
+	}
+
+	// 4. Failed reload keeps previous version intact
+	if err := os.WriteFile(f, []byte("rules: [broken yaml"), 0644); err != nil {
+		t.Fatalf("failed to write broken config: %v", err)
+	}
+	if err := w.Reload(); err == nil {
+		t.Fatalf("expected error on broken config reload, got nil")
+	}
+	afterFailedReload := w.Get()
+	if afterFailedReload.Version != modifiedRS.Version {
+		t.Fatalf("version changed after failed reload! got %s, want %s", afterFailedReload.Version, modifiedRS.Version)
+	}
+
+	// 5. Explicit version in config is preserved
+	if err := os.WriteFile(f, []byte(sampleValidYAML), 0644); err != nil {
+		t.Fatalf("failed to write valid versioned config: %v", err)
+	}
+	if err := w.Reload(); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	explicitRS := w.Get()
+	if explicitRS.Version != "v1.0" {
+		t.Fatalf("expected explicit version v1.0, got %s", explicitRS.Version)
+	}
+}
+

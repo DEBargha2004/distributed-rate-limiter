@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"sync/atomic"
 
@@ -45,6 +47,11 @@ func (w *Watcher) Reload() error {
 
 	if err := rs.Validate(); err != nil {
 		return err
+	}
+
+	if rs.Version == "" {
+		hash := sha256.Sum256(data)
+		rs.Version = hex.EncodeToString(hash[:8])
 	}
 
 	//All the writes before this are committed first to the main memory

@@ -111,6 +111,18 @@
   - *What risk does returning a non-zero RetryAfter introduce to automated clients?* Returning a positive `RetryAfter` falsely signals that the request will succeed if the client waits and retries. Automated clients (e.g. gRPC retry interceptors) will loop repeatedly, wasting network bandwidth, CPU cycles, and flooding the rate limiting service.
 - **Explain-back**: Implemented `ResolveCost` to enforce the quota cost resolution hierarchy: explicit positive request cost (`req.Cost > 0`), fallback to configured rule default (`rule.DefaultCost > 0`), and fallback to 1. Non-positive values are sanitized to prevent clients from gaining quota or bypassing limits. In Redis Lua, requests with cost > available tokens immediately deny without mutating stored bucket state. End-to-end tests confirmed cost 5 consumes 5, fallbacks work, and oversized requests fail fast.
 
+---
+
+## Brick 1.5 (retro) [B] Rule-Set Version Stamp (`internal/config/watcher.go`)
+- **Date**: 2026-11-21
+- **Prediction**: Unversioned configs auto-generate a content hash stamp; invalid YAML leaves the pointer and version pointing to the old snapshot; in-flight requests safely finish using the old immutable snapshot without locks.
+- **Result**: `TestWatcher_VersionStamping` and all watcher concurrency tests passed under `-race`.
+- **Defense Notes**:
+  - *Why an immutable snapshot behind an atomic pointer instead of an RWMutex?* `atomic.Pointer` provides zero lock contention for high-throughput readers (`w.Get()`), avoiding CPU cache line bouncing and writer starvation under load.
+  - *What does a reader holding an old snapshot see?* A completely self-consistent, immutable view of the rules for the lifetime of that request. In Go, the garbage collector preserves the old struct until all goroutines finish with their reference.
+- **Explain-back**: Implemented automatic version stamping on `RuleSet`. When an explicit `version` string is missing in the YAML configuration, `Reload()` calculates a SHA256 content hash of the raw configuration bytes (`hex.EncodeToString(hash[:8])`). Failed reloads reject bad configurations and leave the previous pointer untouched, ensuring the active version string changes only on successful atomic swaps.
+
+
 
 
 

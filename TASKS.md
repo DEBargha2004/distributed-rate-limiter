@@ -9,7 +9,7 @@
 
 | Phase | Focus                                                                            | Status                             | Done / Total |
 | ----- | -------------------------------------------------------------------------------- | ---------------------------------- | ------------ |
-| 1     | Config and hot-reload (`internal/config`)                                        | Core complete, 2 retro bricks open | 4 / 6        |
+| 1     | Config and hot-reload (`internal/config`)                                        | Core complete, 1 retro brick open  | 5 / 6        |
 | 2     | Atomic algorithms in Lua (`internal/redis/lua`)                                  | Core complete, 3 retro bricks open | 4 / 7        |
 | 3     | Redis client, script manager, **thin end-to-end slice**                          | Complete                           | 6 / 6        |
 | 4     | Engine: keys, rule matching, cost, multi-rule combine                            | In progress                        | 4 / 5        |
@@ -35,7 +35,7 @@
 - [x] 1.2 [A] Atomic pointer storage and read path (`watcher.go`)
 - [x] 1.3 [A] Safe `Reload()` (parse, validate, swap, keep old on failure)
 - [x] 1.4 [A] Tests with dynamic updates under load (`watcher_test.go`)
-- [ ] 1.5 (retro) [B] Rule-set version stamp: each `RuleSet` carries a version (counter or content hash) readable from `Get()`, so decisions can log which version they used. Confirm `Rule` already has fields: id, match dimension(s), algorithm, limit, window, failure policy; add any missing.
+- [x] 1.5 (retro) [B] Rule-set version stamp: each `RuleSet` carries a version (counter or content hash) readable from `Get()`, so decisions can log which version they used. Confirm `Rule` already has fields: id, match dimension(s), algorithm, limit, window, failure policy; add any missing.
 - [ ] 1.6 (retro) [B] File watching: reload automatically on file change (fsnotify or poll; record choice in an ADR). Rapid successive writes must not produce a torn or half-applied state.
 
 **Done when**: 1.5: `Get()` exposes the version and a test shows the version changes only on successful reload. 1.6: editing the rules file changes active rules within a bounded time; an invalid edit leaves the old set and logs the error.
