@@ -60,38 +60,6 @@ func (l *Limiter) Check(ctx context.Context, key string, cost int64) (algorithm.
 		}
 	}
 
-	// =========================================================================
-	// LEARNER IMPLEMENTATION AREA [Brick 3.3]:
-	//
-	// Step A: Determine ScriptName and ARGV slice based on l.rule.Algorithm:
-	//   - AlgorithmFixedWindow:
-	//       script: ScriptFixedWindow
-	//       args:   l.rule.Limit, int64(l.rule.Window.Seconds()), effectiveCost
-	//   - AlgorithmSlidingWindow:
-	//       script: ScriptSlidingWindow
-	//       args:   l.rule.Limit, int64(l.rule.Window.Seconds()), effectiveCost
-	//   - AlgorithmTokenBucket:
-	//       script:   ScriptTokenBucket
-	//       idleTTL:  calculate reasonable idle expiry (e.g. max(60, int64(l.rule.Window.Seconds())))
-	//       refillStr: Format float as string (e.g. fmt.Sprintf("%f", l.rule.RefillRate)) to prevent float truncation
-	//       args:     l.rule.Capacity, refillStr, effectiveCost, idleTTL
-	//   - Default: return ErrUnknownScript
-	//
-	// Step B: Execute script via l.sm.Run(ctx, scriptName, []string{key}, args...)
-	//
-	// Step C: Parse the returned Lua array:
-	//   Expected tuple: [allowed (1 or 0), remaining, retry_after_sec, reset_at_timestamp]
-	//   Convert to algorithm.Decision:
-	//     Allowed:    allowed == 1
-	//     Limit:      configured limit (l.rule.Limit, or l.rule.Capacity for token bucket)
-	//     Remaining:  remaining
-	//     RetryAfter: time.Duration(retry_after_sec) * time.Second
-	//     ResetAt:    time.Unix(reset_at_timestamp, 0)
-	//     RuleID:     l.rule.ID
-	// =========================================================================
-
-	// TODO [Learner Brick 3.3]: implement Step A, B, and C
-
 	var script ScriptName
 	var args []any
 

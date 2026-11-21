@@ -40,29 +40,6 @@ func (s *GRPCServer) Allow(ctx context.Context, req *pb.AllowRequest) (*pb.Allow
 		return nil, status.Error(codes.InvalidArgument, "key cannot be empty")
 	}
 
-	// =========================================================================
-	// LEARNER IMPLEMENTATION AREA [Brick 3.5]:
-	//
-	// Step A: Invoke the engine to assess the request:
-	//         decision, err := s.engine.Allow(ctx, req.RuleId, req.Key, req.Cost)
-	//
-	// Step B: Error handling:
-	//         If err matches engine.ErrRuleNotFound, return gRPC NotFound status:
-	//             return nil, status.Error(codes.NotFound, err.Error())
-	//         For other errors, return gRPC Internal status:
-	//             return nil, status.Error(codes.Internal, err.Error())
-	//
-	// Step C: Map algorithm.Decision to pb.AllowResponse:
-	//         - Allowed:      decision.Allowed
-	//         - Limit:        decision.Limit
-	//         - Remaining:    decision.Remaining
-	//         - RetryAfterMs: decision.RetryAfter.Milliseconds()
-	//         - ResetAtMs:    decision.ResetAt.UnixMilli()
-	//         - RuleId:       decision.RuleID
-	// =========================================================================
-
-	// TODO [Learner Brick 3.5]: implement Step A, B, and C
-
 	decision, err := s.engine.Allow(ctx, req.RuleId, req.Key, req.Cost)
 
 	if err != nil {

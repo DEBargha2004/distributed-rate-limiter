@@ -137,24 +137,6 @@ rules:
 	// Unique subject per test run; Redis script TTL handles cleanup automatically
 	testSubject := fmt.Sprintf("smoke-%d", time.Now().UnixNano())
 
-	// =========================================================================
-	// LEARNER IMPLEMENTATION AREA [Brick 3.6]:
-	//
-	// Make 4 consecutive client.Allow calls for testSubject with Cost: 1.
-	//
-	// Calls 1 to 3:
-	// - Must be Allowed == true
-	// - Remaining must decrement (2 -> 1 -> 0)
-	// - RetryAfterMs must be 0
-	//
-	// Call 4:
-	// - Must be Allowed == false
-	// - Remaining must be 0
-	// - RetryAfterMs must be within the expected range for refill_rate: 0.5
-	//   (with 1 missing token at 0.5 tokens/sec, expect ~2000ms)
-	// - Limit must be 3, RuleId must be "smoke-rule"
-	// =========================================================================
-
 	for i := 0; i < 4; i++ {
 		res, err := client.Allow(ctx, &pb.AllowRequest{Key: testSubject, RuleId: "smoke-rule", Cost: 1})
 		if err != nil {

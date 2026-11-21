@@ -73,11 +73,6 @@ func (sm *ScriptManager) LoadAll(ctx context.Context) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// TODO [Learner Brick 3.2]:
-	// Iterate through sm.sources, call sm.client.ScriptLoad(ctx, src).Result(),
-	// and record the resulting SHA1 in sm.shas[name].
-	// If ScriptLoad returns an error, return it wrapped.
-
 	for name, src := range sm.sources {
 		sha, err := sm.client.ScriptLoad(ctx, string(src)).Result()
 
@@ -100,16 +95,6 @@ func (sm *ScriptManager) GetSHA(name ScriptName) (string, bool) {
 
 // Run executes a script using EVALSHA with automatic NOSCRIPT recovery (reloading and retrying once).
 func (sm *ScriptManager) Run(ctx context.Context, name ScriptName, keys []string, args ...any) (any, error) {
-	// TODO [Learner Brick 3.2]:
-	// 1. Check if the script exists in sm.sources. Return ErrUnknownScript if not found.
-	// 2. Fetch the cached SHA from sm.shas (read lock). If not found, load it.
-	// 3. Attempt sm.client.EvalSha(ctx, sha, keys, args...).Result().
-	// 4. If an error occurs and is a NOSCRIPT error (use isNoScriptErr(err)):
-	//    a. Reload the script: sm.client.ScriptLoad(ctx, source).Result()
-	//    b. Update sm.shas under write lock.
-	//    c. Retry sm.client.EvalSha with the new SHA.
-	// 5. Return result and error.
-
 	sm.mu.RLock()
 	src, ok := sm.sources[name]
 	sm.mu.RUnlock()

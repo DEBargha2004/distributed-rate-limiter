@@ -59,11 +59,6 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg.PoolSize = 50
 	}
 
-	// TODO [Learner Brick 3.1]:
-	// 1. Initialize redis.NewUniversalClient using &redis.UniversalOptions{ ... }
-	//    mapping Addrs, Password, DB, DialTimeout, ReadTimeout, WriteTimeout, and PoolSize.
-	// 2. Return &Client{rdb: uClient, cfg: cfg}, nil.
-
 	client := &Client{}
 	client.rdb = redis.NewUniversalClient(&redis.UniversalOptions{
 		Addrs:        cfg.Addrs,
@@ -81,10 +76,6 @@ func NewClient(cfg Config) (*Client, error) {
 
 // Ping performs a health check against Redis with the given context.
 func (c *Client) Ping(ctx context.Context) error {
-	// TODO [Learner Brick 3.1]:
-	// 1. If c == nil or c.rdb == nil, return an error.
-	// 2. Call c.rdb.Ping(ctx).Err() and return the error.
-
 	if c == nil || c.rdb == nil {
 		return errors.New("Invalid client")
 	}
@@ -98,10 +89,6 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Close gracefully closes connections in the Redis pool.
 func (c *Client) Close() error {
-	// TODO [Learner Brick 3.1]:
-	// 1. If c == nil or c.rdb == nil, return nil.
-	// 2. Call c.rdb.Close() and return its error.
-
 	if c == nil || c.rdb == nil {
 		return nil
 	}

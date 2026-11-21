@@ -28,39 +28,6 @@ local remaining = 0
 local retry_after = 0
 local reset_at = math.ceil(now)
 
--- =========================================================================
--- LEARNER IMPLEMENTATION AREA:
---
--- Step A: Fetch current bucket state from the Redis Hash:
---         - local data = redis.call('HMGET', key, 'tokens', 'last_refill')
---         - If data[1] is false/nil (brand new bucket):
---             tokens = capacity
---             last_refill = now
---         - Else:
---             tokens = tonumber(data[1])
---             last_refill = tonumber(data[2])
---             Calculate elapsed time: elapsed = math.max(0, now - last_refill)
---             Replenish tokens: tokens = math.min(capacity, tokens + (elapsed * refill_rate))
---
--- Step B: Evaluate if available tokens satisfy the request cost:
---         - If cost > tokens (Rejected):
---             allowed = 0
---             remaining = math.floor(tokens)
---             local missing_tokens = cost - tokens
---             retry_after = math.max(1, math.ceil(missing_tokens / refill_rate))
---             reset_at = math.ceil(now + retry_after)
---         - Else (Allowed):
---             allowed = 1
---             tokens = tokens - cost
---             Save updated state: redis.call('HSET', key, 'tokens', tostring(tokens), 'last_refill', tostring(now))
---             Set idle cleanup: redis.call('EXPIRE', key, idle_ttl)
---             remaining = math.floor(tokens)
---             retry_after = 0
---             reset_at = math.ceil(now + ((capacity - tokens) / refill_rate))
--- =========================================================================
-
--- TODO: Write the logic for Step A and Step B here!
-
 local data = redis.call('HMGET', key, 'tokens', 'last_refill')
 
 local tokens = data[1]

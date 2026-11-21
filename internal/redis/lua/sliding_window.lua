@@ -24,38 +24,6 @@ local remaining = 0
 local retry_after = 0
 local reset_at = now + window
 
--- =========================================================================
--- LEARNER IMPLEMENTATION AREA:
---
--- Step A: Calculate bucket indices for the current and previous windows:
---         - curr_bucket = tostring(math.floor(now / window))
---         - prev_bucket = tostring(math.floor(now / window) - 1)
---
--- Step B: Fetch current and previous counts from the Redis Hash:
---         - local counts = redis.call('HMGET', key, curr_bucket, prev_bucket)
---         - Convert counts[1] (curr) and counts[2] (prev) to numbers (default to 0 if false/nil)
---
--- Step C: Calculate the sliding overlap weight:
---         - time_into_current = now % window
---         - prev_weight = (window - time_into_current) / window
---         - estimated_count = curr_count + (prev_count * prev_weight)
---
--- Step D: Check quota against limit:
---         - If estimated_count + cost > limit:
---             allowed = 0
---             remaining = math.max(0, math.floor(limit - estimated_count))
---             retry_after = math.max(1, math.ceil(window - time_into_current))
---             reset_at = now + retry_after
---         - Else (Allowed):
---             allowed = 1
---             Increment current bucket: redis.call('HINCRBY', key, curr_bucket, cost)
---             Refresh key TTL: redis.call('EXPIRE', key, window * 2)
---             remaining = math.max(0, math.floor(limit - (estimated_count + cost)))
---             retry_after = 0
---             reset_at = now + (window - time_into_current)
--- =========================================================================
-
--- TODO: Write the logic for Steps A, B, C, and D here!
 local curr_bucket = tostring(math.floor(now / window))
 local prev_bucket = tostring(math.floor(now / window) - 1)
 

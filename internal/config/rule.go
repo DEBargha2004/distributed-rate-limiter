@@ -65,19 +65,6 @@ type RuleSet struct {
 }
 
 // Validate validates that a single Rule contains all required and valid fields.
-//
-// TODO (Learner Task 1.1):
-// Implement the validation logic:
-// 1. Check ID is not empty (ErrEmptyRuleID).
-// 2. Check Dimension is one of: DimensionIP, DimensionUser, DimensionAPIKey, DimensionRoute (ErrInvalidDimension).
-// 3. Check FailurePolicy is PolicyFailOpen or PolicyFailClosed (ErrInvalidFailurePolicy).
-// 4. Check Algorithm:
-//   - If AlgorithmTokenBucket: Capacity > 0 and RefillRate > 0 (ErrInvalidTokenBucketConfig).
-//   - If AlgorithmFixedWindow or AlgorithmSlidingWindow: Limit > 0 (ErrInvalidLimit) and Window > 0 (ErrInvalidWindow).
-//   - If none of the above: return ErrInvalidAlgorithm.
-//
-// 5. If DefaultCost <= 0, you can set it to a sensible default (e.g. 1) or require DefaultCost > 0.
-// 6. Return nil if everything is valid.
 func (r *Rule) Validate() error {
 	if r.ID == "" {
 		return ErrEmptyRuleID
@@ -122,15 +109,6 @@ func (r *Rule) Validate() error {
 }
 
 // Validate validates the entire RuleSet collection.
-//
-// TODO (Learner Task 1.1):
-// Implement the validation logic:
-// 1. Check that r.Rules is not nil and has at least 1 rule (ErrEmptyRuleSet).
-// 2. Iterate through r.Rules:
-//   - Ensure the rule pointer is not nil (ErrNilRule).
-//   - Call rule.Validate(). If it returns an error, wrap and return it.
-//
-// 3. Return nil if the entire set is valid.
 func (rs *RuleSet) Validate() error {
 	if len(rs.Rules) == 0 {
 		return ErrEmptyRuleSet

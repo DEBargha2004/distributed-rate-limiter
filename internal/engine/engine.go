@@ -210,11 +210,6 @@ func (e *Engine) Allow(ctx context.Context, ruleID string, subject string, cost 
 //   - RuleID & Limit: Attributed to the decision dictating the outcome:
 //     if denied, the rule with the max RetryAfter; if allowed, the rule with the min Remaining.
 func Combine(decisions []algorithm.Decision) algorithm.Decision {
-	// =========================================================================
-	// LEARNER IMPLEMENTATION AREA [Brick 4.3]:
-	// Implement multi-decision aggregation per Spec R13.
-	// =========================================================================
-
 	if len(decisions) == 0 {
 		return algorithm.Decision{
 			Allowed:   true,
@@ -276,13 +271,6 @@ func Combine(decisions []algorithm.Decision) algorithm.Decision {
 // Any non-positive cost (zero or negative) is sanitized to prevent callers
 // from bypassing rate limits or gaining quota.
 func ResolveCost(reqCost, defaultCost int64) int64 {
-	// =========================================================================
-	// LEARNER IMPLEMENTATION AREA [Brick 4.4]:
-	// Implement cost resolution hierarchy:
-	// - If reqCost > 0, return reqCost
-	// - Else if defaultCost > 0, return defaultCost
-	// - Else return 1
-	// =========================================================================
 	if reqCost > 0 {
 		return reqCost
 	} else if defaultCost > 0 {
@@ -296,17 +284,6 @@ func ResolveCost(reqCost, defaultCost int64) int64 {
 // It executes each matching rule against Redis via limiter.Check, accepts partial consumption
 // across Redis Cluster slots per ADR 003, and combines the results via Combine.
 func (e *Engine) AllowRequest(ctx context.Context, req Request) (algorithm.Decision, error) {
-	// =========================================================================
-	// LEARNER IMPLEMENTATION AREA [Brick 4.3 & 4.4]:
-	// Step 1: Match rules using e.MatchRules(req).
-	// Step 2: If len(matches) == 0, return Combine(nil), nil.
-	// Step 3: For each match, determine effective cost using ResolveCost(req.Cost, match.Rule.DefaultCost).
-	//         Format key using FormatKey(rule.ID, match.Subject),
-	//         instantiate or reuse limiter via redis.NewLimiter,
-	//         and execute limiter.Check(ctx, key, cost).
-	// Step 4: Collect all decisions and return Combine(decisions), nil.
-	// =========================================================================
-
 	matches, err := e.MatchRules(req)
 
 	if err != nil {

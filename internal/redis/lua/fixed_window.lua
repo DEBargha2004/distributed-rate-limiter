@@ -18,37 +18,10 @@ local cost = tonumber(ARGV[3])
 local time_res = redis.call('TIME')
 local now = tonumber(time_res[1])
 
-
-
--- =========================================================================
--- LEARNER IMPLEMENTATION AREA:
---
--- Step A: Read current counter from Redis using redis.call('GET', key).
---         Remember: If the key doesn't exist yet, Redis returns false in Lua.
---         Handle this so your current count starts at 0.
-
---
--- Step B: Evaluate if current + cost exceeds limit:
---         - If exceeded:
---             allowed = 0
---             remaining = math.max(0, limit - current)
---             retry_after = redis.call('TTL', key) (if < 0, use window)
---             reset_at = now + retry_after
---         - If allowed:
---             allowed = 1
---             Increment the key by cost using redis.call('INCRBY', key, cost)
---             If this was the first request (or key has no TTL), set EXPIRE
---             remaining = limit - (current + cost)
---             retry_after = 0
---             reset_at = now + window
--- =========================================================================
-
 local allowed = 0
 local remaining = 0
 local retry_after = 0
 local reset_at = now + window
-
--- TODO: Write the logic for Step A and Step B here!
 
 local current = redis.call('GET', key)
 
