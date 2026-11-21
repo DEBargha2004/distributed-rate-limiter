@@ -122,6 +122,18 @@
   - *What does a reader holding an old snapshot see?* A completely self-consistent, immutable view of the rules for the lifetime of that request. In Go, the garbage collector preserves the old struct until all goroutines finish with their reference.
 - **Explain-back**: Implemented automatic version stamping on `RuleSet`. When an explicit `version` string is missing in the YAML configuration, `Reload()` calculates a SHA256 content hash of the raw configuration bytes (`hex.EncodeToString(hash[:8])`). Failed reloads reject bad configurations and leave the previous pointer untouched, ensuring the active version string changes only on successful atomic swaps.
 
+---
+
+## Brick 4.5 [B] Structured Decision Log Line (`internal/engine/engine.go`)
+- **Date**: 2026-11-21
+- **Prediction**: Capturing logs in memory via an io.Writer/buffer enables deterministic unit testing; dynamic reload instantly updates the logged `ruleset_version` to "v2.0"; synchronous logging under 50k RPS causes CPU exhaustion from string allocations and massive latency degradation from disk write and mutex contention.
+- **Result**: `TestEngine_StructuredDecisionLogging` passed under `-race`, verifying all fields and dynamic version updates on reload.
+- **Defense Notes**:
+  - *Why structured logging over fmt.Printf?* Structured key-value logging (`log/slog`) enables downstream observability tools (Datadog, Loki, BigQuery) to index, aggregate, filter, and trace rate limiting decisions across millions of requests without brittle regex parsing.
+  - *What is the performance implication of logging on every request at 50k RPS?* Synchronous formatting generates heavy heap allocations (triggering GC pacing pauses), while synchronous writes force kernel context switches and thread lock contention across goroutines. High-throughput edge systems require leveled sampling or asynchronous lock-free ring buffers.
+- **Explain-back**: Integrated `log/slog` structured logging into `Engine.Allow()`. Each evaluated decision emits an `InfoContext` event capturing `rule_id`, `algorithm`, `ruleset_version` (dynamically loaded from the active `RuleSet`), `subject`, `cost`, `allowed`, `remaining`, and `retry_after_ms`. Added `WithLogger` on `Engine` to allow injecting custom log sinks during tests and production. Verified that dynamic config reloads immediately reflect the updated ruleset version in subsequent log output.
+
+
 
 
 

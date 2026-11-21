@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -58,6 +59,7 @@ func FormatKey(ruleID string, subject string, suffix ...string) string {
 type Engine struct {
 	watcher *config.Watcher
 	sm      *redis.ScriptManager
+	logger  *slog.Logger
 }
 
 // NewEngine creates a new Engine with access to configuration snapshots and the Redis script manager.
@@ -72,7 +74,16 @@ func NewEngine(watcher *config.Watcher, sm *redis.ScriptManager) (*Engine, error
 	return &Engine{
 		watcher: watcher,
 		sm:      sm,
+		logger:  slog.Default(),
 	}, nil
+}
+
+// WithLogger sets a custom structured logger on Engine (useful for testing and observability pipelines).
+func (e *Engine) WithLogger(l *slog.Logger) *Engine {
+	if l != nil {
+		e.logger = l
+	}
+	return e
 }
 
 // GetRule finds a rule by its unique ID from the active configuration snapshot.
@@ -196,7 +207,29 @@ func (e *Engine) Allow(ctx context.Context, ruleID string, subject string, cost 
 	}
 
 	// 3. Delegate execution to Redis Lua
-	return limiter.Check(ctx, key, cost)
+	decision, err := limiter.Check(ctx, key, cost)
+	if err != nil {
+		return algorithm.Decision{}, err
+	}
+
+	// 4. Emit structured decision log line
+	version := ""
+	if rs := e.watcher.Get(); rs != nil {
+		version = rs.Version
+	}
+
+	e.logger.InfoContext(ctx, "rate_limit_decision",
+		slog.String("rule_id", rule.ID),
+		slog.String("algorithm", string(rule.Algorithm)),
+		slog.String("ruleset_version", version),
+		slog.String("subject", subject),
+		slog.Int64("cost", cost),
+		slog.Bool("allowed", decision.Allowed),
+		slog.Int64("remaining", decision.Remaining),
+		slog.Int64("retry_after_ms", decision.RetryAfter.Milliseconds()),
+	)
+
+	return decision, nil
 }
 
 // Combine merges multiple rate-limiting decisions into an aggregate decision per Spec R13.

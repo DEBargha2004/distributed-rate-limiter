@@ -1,7 +1,10 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -940,4 +943,114 @@ func TestEngine_CostHandling(t *testing.T) {
 		}
 	})
 }
+
+const loggingTestConfigV1 = `
+version: "v1.0"
+rules:
+  login-limit:
+    id: "login-limit"
+    dimension: "ip"
+    algorithm: "fixed_window"
+    limit: 5
+    window: 10s
+    default_cost: 1
+    failure_policy: "fail_closed"
+`
+
+const loggingTestConfigV2 = `
+version: "v2.0"
+rules:
+  login-limit:
+    id: "login-limit"
+    dimension: "ip"
+    algorithm: "fixed_window"
+    limit: 10
+    window: 10s
+    default_cost: 1
+    failure_policy: "fail_closed"
+`
+
+type decisionLogEntry struct {
+	Level          string `json:"level"`
+	Msg            string `json:"msg"`
+	RuleID         string `json:"rule_id"`
+	Algorithm      string `json:"algorithm"`
+	RulesetVersion string `json:"ruleset_version"`
+	Subject        string `json:"subject"`
+	Cost           int64  `json:"cost"`
+	Allowed        bool   `json:"allowed"`
+	Remaining      int64  `json:"remaining"`
+}
+
+func TestEngine_StructuredDecisionLogging(t *testing.T) {
+	ctx := context.Background()
+	eng, watcher, configPath, _ := setupTestEngine(t, loggingTestConfigV1)
+
+	var logBuf bytes.Buffer
+	jsonHandler := slog.NewJSONHandler(&logBuf, nil)
+	eng.WithLogger(slog.New(jsonHandler))
+
+	// 1. Initial decision should log fields including ruleset_version "v1.0"
+	_, err := eng.Allow(ctx, "login-limit", "10.0.0.1", 1)
+	if err != nil {
+		t.Fatalf("unexpected Allow error: %v", err)
+	}
+
+	if logBuf.Len() == 0 {
+		t.Fatalf("expected structured log line to be emitted, but log buffer was empty")
+	}
+
+	var entry1 decisionLogEntry
+	if err := json.Unmarshal(logBuf.Bytes(), &entry1); err != nil {
+		t.Fatalf("failed to parse structured JSON log: %v (raw: %s)", err, logBuf.String())
+	}
+
+	if entry1.RuleID != "login-limit" {
+		t.Errorf("expected logged rule_id='login-limit', got %q", entry1.RuleID)
+	}
+	if entry1.Algorithm != "fixed_window" {
+		t.Errorf("expected logged algorithm='fixed_window', got %q", entry1.Algorithm)
+	}
+	if entry1.RulesetVersion != "v1.0" {
+		t.Errorf("expected logged ruleset_version='v1.0', got %q", entry1.RulesetVersion)
+	}
+	if entry1.Subject != "10.0.0.1" {
+		t.Errorf("expected logged subject='10.0.0.1', got %q", entry1.Subject)
+	}
+	if !entry1.Allowed {
+		t.Errorf("expected logged allowed=true, got false")
+	}
+
+	// 2. Dynamic config reload to "v2.0"
+	if err := os.WriteFile(configPath, []byte(loggingTestConfigV2), 0644); err != nil {
+		t.Fatalf("failed to update config file: %v", err)
+	}
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("failed to reload watcher: %v", err)
+	}
+
+	// Reset buffer and evaluate another request
+	logBuf.Reset()
+	_, err = eng.Allow(ctx, "login-limit", "10.0.0.2", 2)
+	if err != nil {
+		t.Fatalf("unexpected Allow error after reload: %v", err)
+	}
+
+	if logBuf.Len() == 0 {
+		t.Fatalf("expected structured log line after reload, but log buffer was empty")
+	}
+
+	var entry2 decisionLogEntry
+	if err := json.Unmarshal(logBuf.Bytes(), &entry2); err != nil {
+		t.Fatalf("failed to parse structured JSON log after reload: %v (raw: %s)", err, logBuf.String())
+	}
+
+	if entry2.RulesetVersion != "v2.0" {
+		t.Fatalf("expected logged ruleset_version to change to 'v2.0' after reload, got %q", entry2.RulesetVersion)
+	}
+	if entry2.Cost != 2 {
+		t.Errorf("expected logged cost=2, got %d", entry2.Cost)
+	}
+}
+
 
