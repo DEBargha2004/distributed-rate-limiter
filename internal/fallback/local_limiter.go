@@ -71,7 +71,7 @@ func (l *LocalLimiter) Check(cost int64) algorithm.Decision {
 			Allowed:    false,
 			Limit:      int64(l.capacity),
 			Remaining:  int64(Remaining),
-			RetryAfter: time.Duration(RetryAfter) * time.Second,
+			RetryAfter: RetryAfter,
 			ResetAt:    Now.Add(RetryAfter),
 		}
 	} else {
@@ -84,7 +84,7 @@ func (l *LocalLimiter) Check(cost int64) algorithm.Decision {
 			Allowed:    true,
 			Limit:      int64(l.capacity),
 			Remaining:  Remaining,
-			RetryAfter: time.Duration(RetryAfter),
+			RetryAfter: time.Duration(RetryAfter) * time.Second,
 			ResetAt:    Now.Add(time.Duration(math.Ceil(Missing/l.refillRatePerSec)) * time.Second),
 		}
 	}
