@@ -132,6 +132,16 @@
   - *Fail-open vs fail-closed: what does each protect, and which would you choose for a login endpoint vs a public read API?* Fail-closed rejects traffic during downstream outages to protect system security and backend resources; fail-open allows traffic through to preserve uptime and user experience. Choose fail-closed for `/login` because allowing unmetered authentication requests exposes the system to brute-force credential stuffing and exhausts database/CPU resources with cryptographic hashing (bcrypt/argon2). Choose fail-open for public read-only APIs like `/products` where availability and customer experience take precedence over strict quota enforcement.
 - **Explain-back**: Implemented a thread-safe 3-state circuit breaker (`Closed`, `Open`, `HalfOpen`) protected by `sync.Mutex`. State transitions track consecutive failure counts and lazily evaluate cooldown windows via an injectable `Clock` interface. In `HalfOpen`, the breaker enforces single-probe canary recovery using `halfOpenProbing`, allowing exactly one trial request to evaluate Redis while rejecting concurrent callers to prevent stampeding a recovering database.
 
+---
+
+## Brick 5.2 [A] Local Token Bucket (`internal/fallback/local_limiter.go`)
+- **Date**: 2026-11-22
+- **Prediction**: Empty bucket with refill rate 2 tokens/sec missing 4 tokens requires a 2-second wait; across 5 nodes with capacity 100 each, an outage can admit up to 500 requests in a burst.
+- **Result**: All unit tests (burst capacity, lazy refill, oversized rejection, clock skew safety, and concurrency) passed under `go test -race` and `go vet`.
+- **Defense Notes**:
+  - *Why does local fallback limiting allow more requests globally than the central limit during an outage across N server nodes?* When Redis is unavailable, each of the $N$ independent application instances falls back to its own local in-memory token bucket. Because there is no cross-node state synchronization during an outage, each node independently admits up to its local limit $L$, permitting up to $N \times L$ requests globally across the fleet.
+- **Explain-back**: Ported the token bucket algorithm from `token_bucket.lua` into a thread-safe Go struct `LocalLimiter`. Implemented continuous lazy token refill on arrival, guarded against backward NTP clock skew using `max(0, now - lastRefill)`, and ensured rejected or oversized requests do not deduct quota. Accurately computed `RetryAfter` based on missing tokens divided by the refill rate.
+
 
 
 

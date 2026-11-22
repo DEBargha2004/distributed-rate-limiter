@@ -33,7 +33,7 @@ local data = redis.call('HMGET', key, 'tokens', 'last_refill')
 local tokens = data[1]
 local last_refill = data[2]
 
-if not data[1] then
+if not tokens then
     tokens = capacity
     last_refill = now
 else
