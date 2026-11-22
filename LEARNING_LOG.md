@@ -124,14 +124,13 @@
 
 ---
 
-## Brick 4.5 [B] Structured Decision Log Line (`internal/engine/engine.go`)
-- **Date**: 2026-11-21
-- **Prediction**: Capturing logs in memory via an io.Writer/buffer enables deterministic unit testing; dynamic reload instantly updates the logged `ruleset_version` to "v2.0"; synchronous logging under 50k RPS causes CPU exhaustion from string allocations and massive latency degradation from disk write and mutex contention.
-- **Result**: `TestEngine_StructuredDecisionLogging` passed under `-race`, verifying all fields and dynamic version updates on reload.
+## Brick 5.1 [A] Circuit Breaker State Machine (`internal/fallback/breaker.go`)
+- **Date**: 2026-11-22
+- **Prediction**: Without coordination, all concurrent requests would flood Redis simultaneously when cooldown expires; successes reset consecutive failure counts.
+- **Result**: All 7 transition and concurrency tests in `internal/fallback` passed under `go test -race` and `go vet`.
 - **Defense Notes**:
-  - *Why structured logging over fmt.Printf?* Structured key-value logging (`log/slog`) enables downstream observability tools (Datadog, Loki, BigQuery) to index, aggregate, filter, and trace rate limiting decisions across millions of requests without brittle regex parsing.
-  - *What is the performance implication of logging on every request at 50k RPS?* Synchronous formatting generates heavy heap allocations (triggering GC pacing pauses), while synchronous writes force kernel context switches and thread lock contention across goroutines. High-throughput edge systems require leveled sampling or asynchronous lock-free ring buffers.
-- **Explain-back**: Integrated `log/slog` structured logging into `Engine.Allow()`. Each evaluated decision emits an `InfoContext` event capturing `rule_id`, `algorithm`, `ruleset_version` (dynamically loaded from the active `RuleSet`), `subject`, `cost`, `allowed`, `remaining`, and `retry_after_ms`. Added `WithLogger` on `Engine` to allow injecting custom log sinks during tests and production. Verified that dynamic config reloads immediately reflect the updated ruleset version in subsequent log output.
+  - *Fail-open vs fail-closed: what does each protect, and which would you choose for a login endpoint vs a public read API?* Fail-closed rejects traffic during downstream outages to protect system security and backend resources; fail-open allows traffic through to preserve uptime and user experience. Choose fail-closed for `/login` because allowing unmetered authentication requests exposes the system to brute-force credential stuffing and exhausts database/CPU resources with cryptographic hashing (bcrypt/argon2). Choose fail-open for public read-only APIs like `/products` where availability and customer experience take precedence over strict quota enforcement.
+- **Explain-back**: Implemented a thread-safe 3-state circuit breaker (`Closed`, `Open`, `HalfOpen`) protected by `sync.Mutex`. State transitions track consecutive failure counts and lazily evaluate cooldown windows via an injectable `Clock` interface. In `HalfOpen`, the breaker enforces single-probe canary recovery using `halfOpenProbing`, allowing exactly one trial request to evaluate Redis while rejecting concurrent callers to prevent stampeding a recovering database.
 
 
 

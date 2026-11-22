@@ -13,14 +13,14 @@
 | 2     | Atomic algorithms in Lua (`internal/redis/lua`)                                  | Core complete, 3 retro bricks open | 4 / 7        |
 | 3     | Redis client, script manager, **thin end-to-end slice**                          | Complete                           | 6 / 6        |
 | 4     | Engine: keys, rule matching, cost, multi-rule combine                            | Complete                           | 5 / 5        |
-| 5     | Resilience: breaker, local limiter, failure policy, deadlines                    | Pending                            | 0 / 4        |
+| 5     | Resilience: breaker, local limiter, failure policy, deadlines                    | In progress                        | 1 / 4        |
 | 6     | Edge: gRPC hardening, key extractors, HTTP middleware, headers                   | Pending                            | 0 / 4        |
 | 7     | Observability: metrics and `/metrics` (swappable with 6)                         | Pending                            | 0 / 4        |
 | 8     | Redis Cluster: slots, per-node scripts, scaling, hot key (swappable with 5 to 7) | Pending                            | 0 / 4        |
 | 9     | Proof runs: concurrency, benchmark, outage                                       | Pending                            | 0 / 3        |
 | 10    | Ship: README, ADRs, traceability, final cold rebuild                             | Pending                            | 0 / 3        |
 
-**Active brick**: **Brick 5.1 [A] Circuit breaker state machine (`internal/fallback/breaker.go`)**.
+**Active brick**: **Brick 5.2 [A] Local token bucket (`internal/fallback/local_limiter.go`)**.
 **Suggested order for open retro bricks**: 2.4 now; 2.5, 2.6, 2.7, 1.5, 1.6 can be done at any phase boundary but must be closed before the Phase 9 gate.
 **Feedback loop**: `go test -race ./...` for unit tests; Redis integration tests (Docker, build tag) for Lua and client; `go test -bench` for latency; `CLUSTER KEYSLOT` and cluster runs for sharding.
 
@@ -99,7 +99,7 @@
 **Goal**: Redis slowness or outage degrades gracefully per rule.
 **Learn**: state machines, `sync.Mutex`, fail-open vs fail-closed, deadlines driving policy.
 
-- [ ] 5.1 [A] Circuit breaker (`internal/fallback/breaker.go`): closed, open, half-open; failure threshold, cooldown, single-probe recovery.
+- [x] 5.1 [A] Circuit breaker (`internal/fallback/breaker.go`): closed, open, half-open; failure threshold, cooldown, single-probe recovery.
 - [ ] 5.2 [A] Local token bucket (`internal/fallback/local_limiter.go`): Go port of the token bucket that must match the Phase 2 golden vectors (injectable clock); thread-safe.
 - [ ] 5.3 [A] Failure policy handler (`internal/fallback/policy.go`): per-rule `fail_open` / `fail_closed`; with the fallback limiter, route to local limiter first, then the policy for the residual case. `docs/adr/004-failure-policy.md`.
 - [ ] 5.4 [B] Deadline wiring: strict timeout on the Redis call; timeout counts as a breaker failure and triggers the policy.
@@ -215,3 +215,4 @@
 - **Audit session**: guide, tasks, rules and traceability regenerated against the spec; retro bricks 1.5, 1.6, 2.4 to 2.7 added; active brick 2.4 then 3.1.
 - **Session 3**: Phase 3 complete (Bricks 3.1 to 3.6: Redis client, `ScriptManager` with `NOSCRIPT` recovery, Redis `Limiter`, stub engine, gRPC `Allow` handler, and `bufconn` end-to-end smoke test against real Redis; `-race` and `go vet` verified).
 - **Session 4**: Bricks 4.1 & 4.2 complete (deterministic & collision-safe `FormatKey` with delimiter escaping and suffix support, property-based collision and cluster hash tag integrity tests under `-race`, ADR 002 accepted; multi-dimensional rule matching with subject extraction and deterministic ordering under `-race`).
+- **Session 5**: Phase 4 completed (Bricks 4.3 to 4.5 and retro 1.5); Brick 5.1 complete (thread-safe 3-state circuit breaker with single-probe canary recovery, injectable clock, and fail-open vs fail-closed defense under `-race`).
